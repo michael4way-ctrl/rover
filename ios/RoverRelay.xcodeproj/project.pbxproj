@@ -123,7 +123,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 79JC2NTU4N;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RoverRelay/Info.plist;
@@ -142,7 +142,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 79JC2NTU4N;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RoverRelay/Info.plist;

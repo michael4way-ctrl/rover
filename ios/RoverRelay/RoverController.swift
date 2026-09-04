@@ -256,6 +256,7 @@ final class RoverController: ObservableObject {
             return
         }
         guard activeDirection != direction else { return }
+        let wasSonarFollowing = sonarFollowEnabled
         cancelSonarFollowing()
         driveTask?.cancel()
         activeDirection = direction
@@ -269,6 +270,12 @@ final class RoverController: ObservableObject {
         driveTask = Task { [weak self] in
             guard let self else { return }
             if let pendingStop { await pendingStop.value }
+            if wasSonarFollowing {
+                await Task.detached(priority: .userInitiated) {
+                    RoverRequestGate.shared.cancelSonarMovementAndWait()
+                }.value
+                try? await self.api.stop()
+            }
             guard !Task.isCancelled, self.activeDirection == direction else { return }
             var consecutiveNetworkFailures = 0
             while !Task.isCancelled {
@@ -506,6 +513,9 @@ final class RoverController: ObservableObject {
                 } catch {
                     guard self.isCurrentSonarRun(runID) else { return }
                     if let urlError = error as? URLError, urlError.code == .cancelled {
+                        if !RoverRequestGate.shared.ownsSonarControl(runID) {
+                            self.finishSonarFollowingStoppedExternally(runID)
+                        }
                         return
                     }
                     try? await self.api.stop()
@@ -566,6 +576,9 @@ final class RoverController: ObservableObject {
         stopTask = Task { [weak self] in
             if let previousStop { await previousStop.value }
             guard let self else { return }
+            await Task.detached(priority: .userInitiated) {
+                RoverRequestGate.shared.cancelSonarMovementAndWait()
+            }.value
             do {
                 try await self.api.stop()
                 self.commandCount += 1

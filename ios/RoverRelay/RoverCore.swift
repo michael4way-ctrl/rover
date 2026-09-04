@@ -48,6 +48,16 @@ final class RoverRequestGate: @unchecked Sendable {
         tasksToCancel.forEach { $0.cancel() }
     }
 
+    func cancelSonarMovementAndWait() {
+        lock.lock()
+        sonarControlToken = nil
+        let tasksToCancel = Array(sonarMovementTasks.values)
+        lock.unlock()
+
+        tasksToCancel.forEach { $0.cancel() }
+        waitForSonarMovementCompletion()
+    }
+
     func ownsSonarControl(_ token: UUID) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -74,26 +84,15 @@ final class RoverRequestGate: @unchecked Sendable {
         let isWheelCommand = target == "/wheels" || target.hasPrefix("/wheels?")
         let isStopCommand = target == "/stop" || target.hasPrefix("/stop?")
 
+        if isStopCommand {
+            cancelSonarMovementAndWait()
+        }
+
         lock.lock()
         if isWheelCommand, sonarControlToken != nil {
             lock.unlock()
             return false
         }
-        let sonarTasksToCancel: [RoverCancellableRequest]
-        if isStopCommand {
-            sonarControlToken = nil
-            sonarTasksToCancel = Array(sonarMovementTasks.values)
-        } else {
-            sonarTasksToCancel = []
-        }
-        lock.unlock()
-
-        sonarTasksToCancel.forEach { $0.cancel() }
-        if isStopCommand {
-            waitForSonarMovementCompletion()
-        }
-
-        lock.lock()
         let reserved = reserveTurn()
         lock.unlock()
         wait(until: reserved)
