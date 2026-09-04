@@ -1,5 +1,6 @@
 const STORAGE_KEY = "rover-a-controller";
 const OUR_ROVER_HOST = "192.168.2.23";
+const OUR_CAMERA_HOST = "192.168.2.24";
 const MOTOR_IDS = ["m1", "m2", "m3", "m4"];
 const POSITIONS = [
   ["fl", "FL"],
@@ -201,11 +202,11 @@ async function requestRobot(path, options = {}) {
   if (!state.baseUrl) {
     throw new Error("Нет адреса шасси");
   }
+  const host = new URL(state.baseUrl).hostname;
+  if (host !== OUR_ROVER_HOST) {
+    throw new Error(`Запрос заблокирован: разрешён только наш ровер ${OUR_ROVER_HOST}`);
+  }
   if (options.safe !== true) {
-    const host = new URL(state.baseUrl).hostname;
-    if (host !== OUR_ROVER_HOST) {
-      throw new Error(`Управление заблокировано: разрешён только ${OUR_ROVER_HOST}`);
-    }
     if (!state.connected || state.verifiedBaseUrl !== state.baseUrl) {
       throw new Error("Сначала проверьте наш ровер через /status");
     }
@@ -376,6 +377,9 @@ function startStream() {
   try {
     state.cameraUrl = normalizeBaseUrl(el.cameraUrl.value || state.cameraUrl);
     if (!state.cameraUrl) throw new Error("Нет адреса камеры");
+    if (new URL(state.cameraUrl).hostname !== OUR_CAMERA_HOST) {
+      throw new Error(`Камера заблокирована: разрешён только ${OUR_CAMERA_HOST}`);
+    }
     el.cameraUrl.value = state.cameraUrl;
     const stream = cameraStreamUrl(state.cameraUrl);
     el.cameraImage.src = stream;
@@ -393,6 +397,9 @@ function takeSnapshot() {
   try {
     state.cameraUrl = normalizeBaseUrl(el.cameraUrl.value || state.cameraUrl);
     if (!state.cameraUrl) throw new Error("Нет адреса камеры");
+    if (new URL(state.cameraUrl).hostname !== OUR_CAMERA_HOST) {
+      throw new Error(`Камера заблокирована: разрешён только ${OUR_CAMERA_HOST}`);
+    }
     el.cameraUrl.value = state.cameraUrl;
     el.cameraImage.src = cameraPathUrl("/snapshot", { t: Date.now() });
     el.cameraFrame.classList.add("has-image");
@@ -425,6 +432,9 @@ async function updateFlash() {
   try {
     state.cameraUrl = normalizeBaseUrl(el.cameraUrl.value || state.cameraUrl);
     if (!state.cameraUrl) throw new Error("Нет адреса камеры");
+    if (new URL(state.cameraUrl).hostname !== OUR_CAMERA_HOST) {
+      throw new Error(`Камера заблокирована: разрешён только ${OUR_CAMERA_HOST}`);
+    }
     await fetch(cameraPathUrl("/flash", { v: el.flash.value }), { cache: "no-store" });
     logEvent(`Свет: ${el.flash.value}`);
   } catch (error) {
