@@ -26,6 +26,11 @@ const state = {
   direct: { m1: 0, m2: 0, m3: 0, m4: 0 },
   pollTimer: null,
   lastCommandAt: 0,
+  wheelRequest: null,
+  stopRequest: null,
+  driveBusy: false,
+  driveRevision: 0,
+  sensorBusy: false,
 };
 
 const el = {
@@ -48,6 +53,7 @@ const el = {
   cameraMode: document.querySelector("#cameraMode"),
   streamButton: document.querySelector("#streamButton"),
   snapshotButton: document.querySelector("#snapshotButton"),
+  cameraOffButton: document.querySelector("#cameraOffButton"),
   servo: document.querySelector("#servo"),
   servoValue: document.querySelector("#servoValue"),
   flash: document.querySelector("#flash"),
@@ -213,7 +219,10 @@ async function requestRobot(path, options = {}) {
   }
 
   const started = performance.now();
-  const url = `${state.baseUrl}${path}`;
+  const url = new URL(`${state.baseUrl}${path}`);
+  for (const [key, value] of Object.entries(options.query || {})) {
+    url.searchParams.set(key, value);
+  }
   const init =
     options.method === "GET"
       ? { method: "GET", cache: "no-store" }
@@ -223,18 +232,26 @@ async function requestRobot(path, options = {}) {
           body: options.body === undefined ? undefined : JSON.stringify(options.body),
         };
 
-  const response = await fetch(url, init);
-  const elapsed = Math.round(performance.now() - started);
-  el.latencyValue.textContent = `${elapsed} мс`;
-
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), options.deadline || 3000);
   let data = null;
-  const contentType = response.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    data = await response.json();
-  } else {
-    const text = await response.text();
-    data = text ? { text } : {};
+  let response;
+  try {
+    response = await fetch(url, { ...init, signal: controller.signal, redirect: "error" });
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      data = await response.json();
+    } else {
+      const text = await response.text();
+      data = text ? { text } : {};
+    }
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("Ровер не ответил вовремя. Проверьте связь");
+    throw error;
+  } finally {
+    clearTimeout(deadline);
   }
+  el.latencyValue.textContent = `${Math.round(performance.now() - started)} мс`;
 
   if (!response.ok || data?.ok === false) {
     throw new Error(data?.error || `HTTP ${response.status}`);
@@ -288,13 +305,23 @@ function clampMotorPayload(values) {
 }
 
 async function sendWheels(values, timeout = Number(el.timeout.value), label = "wheels") {
-  const now = Date.now();
-  if (now - state.lastCommandAt < 55) return;
-  state.lastCommandAt = now;
-  const payload = { ...clampMotorPayload(values), timeout };
-  await requestRobot("/wheels", { body: payload });
-  setBadge("online", "online");
-  setMessage(label);
+  if (state.wheelRequest || state.stopRequest) throw new Error("Дождитесь завершения команды");
+  state.lastCommandAt = Date.now();
+  const request = requestRobot("/wheels", {
+    method: "GET",
+    query: { ...clampMotorPayload(values), timeout },
+    deadline: 1200,
+  });
+  state.wheelRequest = request;
+  try {
+    await request;
+    if (!state.stopRequest) {
+      setBadge("online", "online");
+      setMessage(label);
+    }
+  } finally {
+    state.wheelRequest = null;
+  }
 }
 
 async function sendVector(vector) {
@@ -304,31 +331,69 @@ async function sendVector(vector) {
 }
 
 function startDrive(vector) {
+  if (!state.connected || state.stopRequest) return;
   state.activeVector = vector;
-  sendVector(vector).catch(handleError);
-  clearInterval(state.driveTimer);
-  state.driveTimer = setInterval(() => {
-    if (state.activeVector) {
-      sendVector(state.activeVector).catch(handleError);
-    }
-  }, getDriveTiming().interval);
+  state.driveRevision += 1;
+  pumpDrive();
 }
 
-async function stopDrive() {
-  clearInterval(state.driveTimer);
+async function pumpDrive() {
+  clearTimeout(state.driveTimer);
+  if (state.driveBusy || !state.activeVector || state.stopRequest) return;
+  const delay = 55 - (Date.now() - state.lastCommandAt);
+  if (delay > 0) {
+    state.driveTimer = setTimeout(pumpDrive, delay);
+    return;
+  }
+  state.driveBusy = true;
+  const revision = state.driveRevision;
+  try {
+    await sendVector(state.activeVector);
+  } catch (error) {
+    await stopDrive();
+    state.connected = false;
+    state.verifiedBaseUrl = "";
+    handleError(error);
+  } finally {
+    state.driveBusy = false;
+    if (state.activeVector && !state.stopRequest) {
+      const interval = revision === state.driveRevision ? getDriveTiming().interval : 55;
+      state.driveTimer = setTimeout(pumpDrive, Math.max(0, interval - (Date.now() - state.lastCommandAt)));
+    }
+  }
+}
+
+function stopDrive() {
+  clearTimeout(state.driveTimer);
   state.driveTimer = null;
   state.activeVector = null;
+  state.keyboard.clear();
+  state.driveRevision += 1;
   for (const button of document.querySelectorAll(".drive-button.is-pressed")) {
     button.classList.remove("is-pressed");
   }
-  try {
-    await requestRobot("/stop", { body: undefined });
-    setBadge("online", "online");
-    setMessage("stop");
-    logEvent("Остановка отправлена");
-  } catch (error) {
-    handleError(error);
-  }
+  if (state.stopRequest) return state.stopRequest;
+  if (!state.connected) return Promise.resolve();
+  // Finish the sole in-flight wheel request before STOP; discard unsent directions.
+  state.stopRequest = (async () => {
+    try {
+      if (state.wheelRequest) await state.wheelRequest.catch(() => {});
+      const delay = 55 - (Date.now() - state.lastCommandAt);
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      state.lastCommandAt = Date.now();
+      await requestRobot("/stop", { method: "GET", deadline: 1200 });
+      setBadge("online", "online");
+      setMessage("stop");
+      logEvent("Остановка отправлена");
+    } catch (error) {
+      state.connected = false;
+      state.verifiedBaseUrl = "";
+      handleError(error);
+    } finally {
+      state.stopRequest = null;
+    }
+  })();
+  return state.stopRequest;
 }
 
 function handleError(error) {
@@ -358,7 +423,6 @@ async function connect() {
     if (state.cameraUrl) {
       el.cameraUrl.value = state.cameraUrl;
       el.cameraValue.textContent = new URL(state.cameraUrl).host;
-      startStream();
     }
     state.connected = true;
     state.verifiedBaseUrl = state.baseUrl;
@@ -412,6 +476,14 @@ function takeSnapshot() {
   }
 }
 
+function stopCamera() {
+  el.cameraImage.removeAttribute("src");
+  el.cameraFrame.classList.remove("has-image");
+  el.cameraMode.textContent = "видео выключено";
+  el.streamButton.classList.remove("active");
+  el.snapshotButton.classList.remove("active");
+}
+
 async function updateServo() {
   syncLabels();
   saveSettings();
@@ -443,12 +515,16 @@ async function updateFlash() {
 }
 
 async function refreshSensors() {
+  if (state.sensorBusy || state.activeVector || state.wheelRequest || state.stopRequest) return;
+  state.sensorBusy = true;
   try {
     const data = await requestRobot("/sensors", { method: "GET", countCommand: false, safe: true });
     renderSensors(data);
     setBadge("online", "online");
   } catch (error) {
     handleError(error);
+  } finally {
+    state.sensorBusy = false;
   }
 }
 
@@ -484,7 +560,7 @@ function setSensorPolling(enabled) {
   state.pollTimer = null;
   if (enabled) {
     refreshSensors();
-    state.pollTimer = setInterval(refreshSensors, 500);
+    state.pollTimer = setInterval(refreshSensors, 1000);
   }
 }
 
@@ -551,6 +627,7 @@ function renderDirectMotors() {
 }
 
 async function testMotor(id, power) {
+  if (state.activeVector || Date.now() - state.lastCommandAt < 55) return;
   const payload = { m1: 0, m2: 0, m3: 0, m4: 0, [id]: power };
   try {
     await sendWheels(payload, 350, `${id.toUpperCase()} ${power}`);
@@ -561,6 +638,7 @@ async function testMotor(id, power) {
 }
 
 async function sendDirect() {
+  if (state.activeVector || Date.now() - state.lastCommandAt < 55) return;
   try {
     await sendWheels(state.direct, getDriveTiming().timeout, "direct");
     logEvent(`Direct: ${MOTOR_IDS.map((id) => state.direct[id]).join("/")}`);
@@ -606,7 +684,9 @@ function bindDriveButtons() {
     });
     button.addEventListener("pointerup", () => stopDrive());
     button.addEventListener("pointercancel", () => stopDrive());
-    button.addEventListener("lostpointercapture", () => button.classList.remove("is-pressed"));
+    button.addEventListener("lostpointercapture", () => {
+      if (button.classList.contains("is-pressed")) stopDrive();
+    });
   }
 }
 
@@ -647,6 +727,7 @@ function bindKeyboard() {
     }
     if (["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.code)) {
       event.preventDefault();
+      if (event.repeat) return;
       state.keyboard.add(event.code);
       updateKeyboardDrive();
     }
@@ -671,6 +752,7 @@ function bindControls() {
   el.holdStopButton.addEventListener("click", stopDrive);
   el.streamButton.addEventListener("click", startStream);
   el.snapshotButton.addEventListener("click", takeSnapshot);
+  el.cameraOffButton.addEventListener("click", stopCamera);
   el.refreshSensorsButton.addEventListener("click", refreshSensors);
   el.pollSensors.addEventListener("change", () => setSensorPolling(el.pollSensors.checked));
   el.resetMappingButton.addEventListener("click", () => {
