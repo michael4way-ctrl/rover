@@ -316,6 +316,7 @@ final class RoverController: ObservableObject {
                     self.finishSonarFollowingStoppedExternally(runID)
                     return
                 }
+                var currentOperation = "Сонар"
                 do {
                     let value = try await self.api.sensors(path: "/sonar")
                     guard self.isCurrentSonarRun(runID), RoverRequestGate.shared.ownsSonarControl(runID) else {
@@ -323,7 +324,6 @@ final class RoverController: ObservableObject {
                         return
                     }
                     self.applySensors(value)
-                    consecutiveFailures = 0
                     let target = targetTracker.observe(
                         distanceCM: self.sensors.sonarCM,
                         valid: self.sensors.sonarValid
@@ -331,6 +331,7 @@ final class RoverController: ObservableObject {
 
                     switch target {
                     case .acquiring:
+                        consecutiveFailures = 0
                         self.sonarFollowState = .waiting
                         self.lastMessage = "Держите руку перед сонаром"
                         try? await Task.sleep(for: .milliseconds(120))
@@ -343,6 +344,7 @@ final class RoverController: ObservableObject {
                         break
                     }
 
+                    currentOperation = "Команда движения"
                     let decision = policy.decision(
                         distanceCM: self.sensors.sonarCM,
                         valid: self.sensors.sonarValid,
@@ -353,6 +355,11 @@ final class RoverController: ObservableObject {
                     case .advance(let power):
                         let motors = profile.motors(for: .forward, power: power)
                         try await self.api.wheels(motors, timeout: 300, sonarControlToken: runID)
+                        guard RoverRequestGate.shared.ownsSonarControl(runID) else {
+                            try? await self.api.stop()
+                            self.finishSonarFollowingStoppedExternally(runID)
+                            return
+                        }
                         self.commandCount += 1
                         self.sonarFollowState = .following
                         self.lastMessage = "Еду к руке · \(power)%"
@@ -360,6 +367,11 @@ final class RoverController: ObservableObject {
                     case .retreat(let power):
                         let motors = profile.motors(for: .back, power: power)
                         try await self.api.wheels(motors, timeout: 300, sonarControlToken: runID)
+                        guard RoverRequestGate.shared.ownsSonarControl(runID) else {
+                            try? await self.api.stop()
+                            self.finishSonarFollowingStoppedExternally(runID)
+                            return
+                        }
                         self.commandCount += 1
                         self.sonarFollowState = .backing
                         self.lastMessage = "Отъезжаю от руки · \(power)%"
@@ -379,6 +391,7 @@ final class RoverController: ObservableObject {
                         self.finishSonarFollowingAfterTargetLoss(runID)
                         return
                     }
+                    consecutiveFailures = 0
                 } catch is CancellationError {
                     return
                 } catch {
@@ -391,7 +404,7 @@ final class RoverController: ObservableObject {
                     consecutiveFailures += 1
                     if consecutiveFailures < 3 {
                         self.sonarFollowState = .waiting
-                        self.lastMessage = "Сонар не ответил — стою и пробую снова"
+                        self.lastMessage = "\(currentOperation) не прошла — стою и пробую снова"
                         try? await Task.sleep(for: .milliseconds(250))
                         continue
                     }

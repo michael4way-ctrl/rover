@@ -15,7 +15,7 @@ struct ContentView: View {
             NavigationStack {
                 SonarFollowScreen(rover: rover)
             }
-            .tabItem { Label("За рукой", systemImage: "hand.raised.fill") }
+            .tabItem { Label("Сонар", systemImage: "sensor.tag.radiowaves.forward.fill") }
 
             NavigationStack {
                 SensorsScreen(rover: rover)
@@ -47,6 +47,7 @@ struct ContentView: View {
 
 private struct SonarFollowScreen: View {
     @ObservedObject var rover: RoverController
+    @State private var rearAreaClear = false
 
     var body: some View {
         ScrollView {
@@ -56,7 +57,7 @@ private struct SonarFollowScreen: View {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Следовать за рукой")
+                            Text("Держать дистанцию по сонару")
                                 .font(.title2.bold())
                             Text("Ровер подъезжает или отъезжает, чтобы держать выбранную дистанцию")
                                 .font(.footnote)
@@ -92,6 +93,15 @@ private struct SonarFollowScreen: View {
                     Slider(value: $rover.sonarFollowPower, in: 35...60, step: 1)
                         .disabled(rover.sonarFollowEnabled)
 
+                    Toggle("Позади ровера свободно", isOn: $rearAreaClear)
+                        .disabled(rover.sonarFollowEnabled)
+
+                    if !rearAreaClear, !rover.sonarFollowEnabled {
+                        Text("Подтвердите свободное место сзади: при близкой ладони ровер поедет назад.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
                     Button {
                         rover.setSonarFollowing(!rover.sonarFollowEnabled)
                     } label: {
@@ -105,7 +115,7 @@ private struct SonarFollowScreen: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(rover.sonarFollowEnabled ? .red : .green)
-                    .disabled(!rover.connected && !rover.sonarFollowEnabled)
+                    .disabled((!rover.connected || !rearAreaClear) && !rover.sonarFollowEnabled)
                 }
                 .cardStyle()
 
@@ -114,7 +124,7 @@ private struct SonarFollowScreen: View {
                         .font(.headline)
                     Text("Поставьте ладонь перед сонаром и включите режим. После двух согласованных замеров отводите руку — ровер подъедет; приближайте — он отъедет. Если цель потеряна, режим выключится; для нового захвата включите его снова.")
                         .font(.callout)
-                    Text("Сонар измеряет только расстояние: он не различает руку, коробку и другие предметы и не видит, с какой стороны находится объект.")
+                    Text("Сонар измеряет только расстояние: он не различает руку, коробку и другие предметы, не видит направление и не проверяет пространство сзади.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -129,6 +139,11 @@ private struct SonarFollowScreen: View {
         .onDisappear {
             if rover.sonarFollowEnabled {
                 rover.setSonarFollowing(false)
+            }
+        }
+        .onChange(of: rover.sonarFollowEnabled) { wasEnabled, isEnabled in
+            if wasEnabled, !isEnabled {
+                rearAreaClear = false
             }
         }
     }
