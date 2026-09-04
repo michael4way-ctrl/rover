@@ -13,6 +13,28 @@ enum RoverError: LocalizedError {
     }
 }
 
+private final class URLSessionTaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionDataTask?
+    private var cancelled = false
+
+    func install(_ task: URLSessionDataTask) {
+        lock.lock()
+        self.task = task
+        let shouldCancel = cancelled
+        lock.unlock()
+        if shouldCancel { task.cancel() }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let task = task
+        lock.unlock()
+        task?.cancel()
+    }
+}
+
 private actor RoverAPI {
     private let chassis = URL(string: "http://192.168.2.23")!
     private let camera = URL(string: "http://192.168.2.24")!
@@ -91,11 +113,46 @@ private actor RoverAPI {
         var request = URLRequest(url: components.url!)
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.timeoutInterval = path == "/snapshot" ? 3 : 1.2
-        let (body, response) = try await session.data(for: request)
+        let result: (Data, URLResponse)
+        if path == "/wheels", let sonarControlToken {
+            result = try await sonarMovementData(for: request, token: sonarControlToken)
+        } else {
+            result = try await session.data(for: request)
+        }
+        let (body, response) = result
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw RoverError.invalidResponse
         }
         return body
+    }
+
+    private func sonarMovementData(for request: URLRequest, token: UUID) async throws -> (Data, URLResponse) {
+        let taskID = UUID()
+        let taskBox = URLSessionTaskBox()
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let task = session.dataTask(with: request) { data, response, error in
+                    RoverRequestGate.shared.finishSonarMovementTask(id: taskID)
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else if let response {
+                        continuation.resume(returning: (data ?? Data(), response))
+                    } else {
+                        continuation.resume(throwing: RoverError.invalidResponse)
+                    }
+                }
+
+                guard RoverRequestGate.shared.registerSonarMovementTask(task, id: taskID, token: token) else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                taskBox.install(task)
+                task.resume()
+            }
+        } onCancel: {
+            taskBox.cancel()
+        }
     }
 
     static func integer(_ value: Any?) -> Int? {
@@ -153,6 +210,7 @@ final class RoverController: ObservableObject {
     }
 
     func connect() async {
+        let wasConnected = connected
         busy = true
         connectionText = "Проверяю 192.168.2.23"
         defer { busy = false }
@@ -176,9 +234,17 @@ final class RoverController: ObservableObject {
                     connectionText = "Связь нестабильна · попытка \(attempt + 1) из 3"
                     try? await Task.sleep(for: .milliseconds(250))
                 } else {
-                    connected = false
-                    connectionText = "Нет связи с ровером"
-                    lastMessage = readable(error)
+                    if wasConnected,
+                       let urlError = error as? URLError,
+                       urlError.code == .timedOut {
+                        connected = true
+                        connectionText = "Связь нестабильна"
+                        lastMessage = "Ровер отвечает с задержкой — управление остаётся доступно"
+                    } else {
+                        connected = false
+                        connectionText = "Нет связи с ровером"
+                        lastMessage = readable(error)
+                    }
                 }
             }
         }

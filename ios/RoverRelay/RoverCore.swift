@@ -1,12 +1,19 @@
 import Foundation
 
+protocol RoverCancellableRequest: AnyObject {
+    func cancel()
+}
+
+extension URLSessionDataTask: RoverCancellableRequest {}
+
 final class RoverRequestGate: @unchecked Sendable {
     static let shared = RoverRequestGate()
 
-    private let lock = NSLock()
+    private let lock = NSCondition()
     private var nextRequestAt = Date.distantPast
     private var sonarControlToken: UUID?
     private var relayedMovementTasks: [UUID: URLSessionDataTask] = [:]
+    private var sonarMovementTasks: [UUID: RoverCancellableRequest] = [:]
 
     private init() {}
 
@@ -32,10 +39,13 @@ final class RoverRequestGate: @unchecked Sendable {
 
     func endSonarControl(_ token: UUID) {
         lock.lock()
-        defer { lock.unlock() }
+        var tasksToCancel: [RoverCancellableRequest] = []
         if sonarControlToken == token {
             sonarControlToken = nil
+            tasksToCancel = Array(sonarMovementTasks.values)
         }
+        lock.unlock()
+        tasksToCancel.forEach { $0.cancel() }
     }
 
     func ownsSonarControl(_ token: UUID) -> Bool {
@@ -69,14 +79,40 @@ final class RoverRequestGate: @unchecked Sendable {
             lock.unlock()
             return false
         }
+        let sonarTasksToCancel: [RoverCancellableRequest]
         if isStopCommand {
             sonarControlToken = nil
+            sonarTasksToCancel = Array(sonarMovementTasks.values)
+        } else {
+            sonarTasksToCancel = []
         }
-        let reserved = reserveTurn()
         lock.unlock()
 
+        sonarTasksToCancel.forEach { $0.cancel() }
+        if isStopCommand {
+            waitForSonarMovementCompletion()
+        }
+
+        lock.lock()
+        let reserved = reserveTurn()
+        lock.unlock()
         wait(until: reserved)
         return true
+    }
+
+    func registerSonarMovementTask(_ task: RoverCancellableRequest, id: UUID, token: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard sonarControlToken == token else { return false }
+        sonarMovementTasks[id] = task
+        return true
+    }
+
+    func finishSonarMovementTask(id: UUID) {
+        lock.lock()
+        sonarMovementTasks[id] = nil
+        lock.broadcast()
+        lock.unlock()
     }
 
     func registerRelayedMovementTask(_ task: URLSessionDataTask, id: UUID) -> Bool {
@@ -90,6 +126,13 @@ final class RoverRequestGate: @unchecked Sendable {
     func finishRelayedMovementTask(id: UUID) {
         lock.lock()
         relayedMovementTasks[id] = nil
+        lock.unlock()
+    }
+
+    private func waitForSonarMovementCompletion() {
+        let deadline = Date().addingTimeInterval(1.5)
+        lock.lock()
+        while !sonarMovementTasks.isEmpty, lock.wait(until: deadline) {}
         lock.unlock()
     }
 

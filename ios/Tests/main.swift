@@ -21,6 +21,20 @@ func expectTarget(_ actual: SonarTargetObservation, _ expected: SonarTargetObser
     }
 }
 
+final class ImmediateFinishingRequest: RoverCancellableRequest {
+    private let onCancel: () -> Void
+    private(set) var cancelled = false
+
+    init(onCancel: @escaping () -> Void) {
+        self.onCancel = onCancel
+    }
+
+    func cancel() {
+        cancelled = true
+        onCancel()
+    }
+}
+
 let profile = WheelProfile.standard
 
 expect(
@@ -147,6 +161,20 @@ guard gate.waitForRelayedTurn(target: "/stop"), !gate.ownsSonarControl(sonarToke
 }
 guard !gate.waitForSonarTurn(sonarToken) else {
     fputs("FAIL revoked sonar run must not resume\n", stderr)
+    exit(1)
+}
+
+let secondSonarToken = gate.beginSonarControl()
+let movementTaskID = UUID()
+let movementTask = ImmediateFinishingRequest {
+    gate.finishSonarMovementTask(id: movementTaskID)
+}
+guard gate.registerSonarMovementTask(movementTask, id: movementTaskID, token: secondSonarToken) else {
+    fputs("FAIL active sonar wheel request must be registered\n", stderr)
+    exit(1)
+}
+guard gate.waitForRelayedTurn(target: "/stop"), movementTask.cancelled else {
+    fputs("FAIL relayed STOP must cancel active sonar movement before forwarding\n", stderr)
     exit(1)
 }
 
