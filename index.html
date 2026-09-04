@@ -31,11 +31,11 @@
         <div class="field-grid">
           <label class="field">
             <span>Шасси</span>
-            <input id="chassisUrl" type="url" inputmode="url" placeholder="http://192.168.2.23" value="http://192.168.2.23" autocomplete="off" />
+            <input id="chassisUrl" type="url" inputmode="url" placeholder="http://127.0.0.1:17777" value="http://127.0.0.1:17777" autocomplete="off" />
           </label>
           <label class="field">
             <span>Камера</span>
-            <input id="cameraUrl" type="url" inputmode="url" placeholder="авто или http://192.168.2.24" autocomplete="off" />
+            <input id="cameraUrl" type="url" inputmode="url" placeholder="http://127.0.0.1:17777" value="http://127.0.0.1:17777" autocomplete="off" readonly />
           </label>
         </div>
 
@@ -103,8 +103,8 @@
             <p class="subtle" id="cameraMode">поток не запущен</p>
           </div>
           <div class="segmented">
-            <button id="streamButton" type="button">Stream</button>
-            <button id="snapshotButton" type="button">Shot</button>
+            <button id="streamButton" type="button">Обновлять</button>
+            <button id="snapshotButton" type="button">Снять</button>
             <button id="cameraOffButton" type="button" title="Выключить видео" aria-label="Выключить видео">■</button>
           </div>
         </div>
@@ -134,7 +134,7 @@
           </div>
           <label class="switch">
             <input id="pollSensors" type="checkbox" />
-            <span>poll</span>
+            <span>обновлять</span>
           </label>
         </div>
 
@@ -232,9 +232,9 @@
         <div class="panel-heading">
           <div>
             <h2 id="buzzer-title">Звук</h2>
-            <p class="subtle">buzzer</p>
+            <p class="subtle">Проверьте, что команды доходят до ровера.</p>
           </div>
-          <button id="beepButton" class="secondary-button" type="button">Beep</button>
+          <button id="beepButton" class="secondary-button" type="button">Короткий сигнал</button>
         </div>
 
         <div class="field-grid compact">

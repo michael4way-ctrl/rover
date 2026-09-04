@@ -1,6 +1,7 @@
 const STORAGE_KEY = "rover-a-controller";
-const OUR_ROVER_HOST = "192.168.2.23";
-const OUR_CAMERA_HOST = "192.168.2.24";
+const BRIDGE_URL = "http://127.0.0.1:17777";
+const BRIDGE_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+const ROVER_HOST = "192.168.2.23";
 const MOTOR_IDS = ["m1", "m2", "m3", "m4"];
 const POSITIONS = [
   ["fl", "Переднее левое"],
@@ -34,6 +35,7 @@ const state = {
   sensorBusy: false,
   calibration: null,
   testUntil: 0,
+  cameraTimer: null,
 };
 
 const el = {
@@ -107,8 +109,8 @@ function cloneProfile(profile) {
 function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-    el.chassisUrl.value = saved.baseUrl || `http://${OUR_ROVER_HOST}`;
-    el.cameraUrl.value = saved.cameraUrl || "";
+    el.chassisUrl.value = BRIDGE_URL;
+    el.cameraUrl.value = BRIDGE_URL;
     el.speed.value = saved.speed || "55";
     el.timeout.value = saved.timeout || "450";
     el.servo.value = saved.servo || "90";
@@ -226,8 +228,8 @@ async function requestRobot(path, options = {}) {
     throw new Error("Нет адреса шасси");
   }
   const host = new URL(state.baseUrl).hostname;
-  if (host !== OUR_ROVER_HOST) {
-    throw new Error(`Запрос заблокирован: разрешён только наш ровер ${OUR_ROVER_HOST}`);
+  if (!BRIDGE_HOSTS.has(host)) {
+    throw new Error("Запрос заблокирован: используйте USB-шлюз на этом Mac");
   }
   if (options.safe !== true) {
     if (!state.connected || state.verifiedBaseUrl !== state.baseUrl) {
@@ -436,17 +438,15 @@ async function connect() {
       throw new Error("Введите адрес шасси");
     }
     el.chassisUrl.value = state.baseUrl;
-    state.cameraUrl = el.cameraUrl.value ? normalizeBaseUrl(el.cameraUrl.value) : inferCameraUrl(state.baseUrl);
+    state.cameraUrl = state.baseUrl;
 
     const host = new URL(state.baseUrl).hostname;
-    if (host !== OUR_ROVER_HOST) {
-      throw new Error(`Это не адрес нашего ровера: нужен ${OUR_ROVER_HOST}`);
+    if (!BRIDGE_HOSTS.has(host)) {
+      throw new Error(`Нужен USB-шлюз ${BRIDGE_URL}`);
     }
 
     const status = await requestRobot("/status", { method: "GET", countCommand: false, safe: true });
-    if (status?.camera) {
-      state.cameraUrl = normalizeBaseUrl(status.camera);
-    }
+    state.cameraUrl = state.baseUrl;
     if (state.cameraUrl) {
       el.cameraUrl.value = state.cameraUrl;
       el.cameraValue.textContent = new URL(state.cameraUrl).host;
@@ -468,14 +468,20 @@ function startStream() {
   try {
     state.cameraUrl = normalizeBaseUrl(el.cameraUrl.value || state.cameraUrl);
     if (!state.cameraUrl) throw new Error("Нет адреса камеры");
-    if (new URL(state.cameraUrl).hostname !== OUR_CAMERA_HOST) {
-      throw new Error(`Камера заблокирована: разрешён только ${OUR_CAMERA_HOST}`);
+    if (!BRIDGE_HOSTS.has(new URL(state.cameraUrl).hostname)) {
+      throw new Error("Камера доступна только через USB-шлюз");
     }
     el.cameraUrl.value = state.cameraUrl;
-    const stream = cameraStreamUrl(state.cameraUrl);
-    el.cameraImage.src = stream;
+    clearInterval(state.cameraTimer);
+    const updateFrame = () => {
+      if (!state.activeVector && !state.wheelRequest && !state.stopRequest) {
+        el.cameraImage.src = cameraPathUrl("/snapshot", { t: Date.now() });
+      }
+    };
+    updateFrame();
+    state.cameraTimer = setInterval(updateFrame, 500);
     el.cameraFrame.classList.add("has-image");
-    el.cameraMode.textContent = "MJPEG stream";
+    el.cameraMode.textContent = "кадры через iPhone";
     el.streamButton.classList.add("active");
     el.snapshotButton.classList.remove("active");
     saveSettings();
@@ -488,8 +494,8 @@ function takeSnapshot() {
   try {
     state.cameraUrl = normalizeBaseUrl(el.cameraUrl.value || state.cameraUrl);
     if (!state.cameraUrl) throw new Error("Нет адреса камеры");
-    if (new URL(state.cameraUrl).hostname !== OUR_CAMERA_HOST) {
-      throw new Error(`Камера заблокирована: разрешён только ${OUR_CAMERA_HOST}`);
+    if (!BRIDGE_HOSTS.has(new URL(state.cameraUrl).hostname)) {
+      throw new Error("Камера доступна только через USB-шлюз");
     }
     el.cameraUrl.value = state.cameraUrl;
     el.cameraImage.src = cameraPathUrl("/snapshot", { t: Date.now() });
@@ -504,6 +510,8 @@ function takeSnapshot() {
 }
 
 function stopCamera() {
+  clearInterval(state.cameraTimer);
+  state.cameraTimer = null;
   el.cameraImage.removeAttribute("src");
   el.cameraFrame.classList.remove("has-image");
   el.cameraMode.textContent = "видео выключено";
@@ -515,7 +523,7 @@ async function updateServo() {
   syncLabels();
   saveSettings();
   try {
-    const data = await requestRobot("/servo", { body: { cam: Number(el.servo.value) } });
+    const data = await requestRobot("/servo", { method: "GET", query: { cam: Number(el.servo.value) } });
     if (typeof data?.cam === "number") {
       el.servo.value = data.cam;
       syncLabels();
@@ -531,8 +539,8 @@ async function updateFlash() {
   try {
     state.cameraUrl = normalizeBaseUrl(el.cameraUrl.value || state.cameraUrl);
     if (!state.cameraUrl) throw new Error("Нет адреса камеры");
-    if (new URL(state.cameraUrl).hostname !== OUR_CAMERA_HOST) {
-      throw new Error(`Камера заблокирована: разрешён только ${OUR_CAMERA_HOST}`);
+    if (!BRIDGE_HOSTS.has(new URL(state.cameraUrl).hostname)) {
+      throw new Error("Камера доступна только через USB-шлюз");
     }
     await fetch(cameraPathUrl("/flash", { v: el.flash.value }), { cache: "no-store" });
     logEvent(`Свет: ${el.flash.value}`);
@@ -695,7 +703,7 @@ function nextCalibrationStep() {
 function exportCalibration() {
   try {
     validateProfile(state.profile);
-    const data = { version: 1, rover: OUR_ROVER_HOST, profile: state.profile };
+    const data = { version: 1, rover: ROVER_HOST, profile: state.profile };
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -709,7 +717,7 @@ function exportCalibration() {
 
 function parseCalibrationFile(text) {
   const data = JSON.parse(text);
-  if (data?.version !== 1 || data?.rover !== OUR_ROVER_HOST) throw new Error("Нужна карта колёс нашего ровера 192.168.2.23");
+  if (data?.version !== 1 || data?.rover !== ROVER_HOST) throw new Error("Нужна карта колёс нашего ровера 192.168.2.23");
   validateProfile(data.profile);
   const profile = { mapping: {}, invert: {}, source: "manual" };
   for (const id of MOTOR_IDS) {
@@ -850,7 +858,7 @@ async function beep() {
   try {
     const freq = Number(el.freq.value);
     const duration = Number(el.duration.value);
-    await requestRobot("/buzzer", { body: { freq, duration } });
+    await requestRobot("/buzzer", { method: "GET", query: { freq, duration } });
     logEvent(`Beep ${freq} Гц`);
   } catch (error) {
     handleError(error);
@@ -861,7 +869,7 @@ async function playMelody() {
   try {
     const melody = el.melody.value.trim();
     if (!melody) throw new Error("Введите мелодию");
-    await requestRobot("/buzzer", { body: { melody } });
+    await requestRobot("/buzzer", { method: "GET", query: { melody } });
     logEvent("Мелодия отправлена");
   } catch (error) {
     handleError(error);

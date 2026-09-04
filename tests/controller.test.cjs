@@ -58,7 +58,7 @@ function setup(t) {
     },
   });
   vm.runInContext(source + `
-    state.baseUrl = state.verifiedBaseUrl = "http://192.168.2.23";
+    state.baseUrl = state.verifiedBaseUrl = "http://127.0.0.1:17777";
     state.connected = true;
     el.speed.value = "55";
     el.timeout.value = "450";
@@ -83,7 +83,7 @@ test("slow response keeps one wheel request and only the newest direction", asyn
   const next = c.requests[1];
   assert.equal(next.init.method, "GET");
   assert.equal(next.init.cache, "no-store");
-  assert.equal(next.url.hostname, "192.168.2.23");
+  assert.equal(next.url.hostname, "127.0.0.1");
   assert.equal(next.url.searchParams.get("m1"), "55");
   assert.equal(next.url.searchParams.get("m2"), "-55");
   const stop = c.stopDrive();
@@ -146,9 +146,9 @@ test("deadline aborts a hanging request", async (t) => {
   assert.equal(c.requests[0].init.signal.aborted, true);
 });
 
-test("other rover addresses are rejected before fetch", async (t) => {
+test("direct rover addresses are rejected so commands always cross the phone", async (t) => {
   const c = setup(t);
-  c.state.baseUrl = "http://192.168.2.25";
+  c.state.baseUrl = "http://192.168.2.23";
   await assert.rejects(c.requestRobot("/status", { safe: true, method: "GET" }));
   assert.equal(c.requests.length, 0);
 });
