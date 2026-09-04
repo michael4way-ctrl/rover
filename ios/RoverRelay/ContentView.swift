@@ -316,6 +316,7 @@ private struct SensorsScreen: View {
 
 private struct ToolsScreen: View {
     @ObservedObject var rover: RoverController
+    @State private var showCalibration = false
 
     var body: some View {
         ScrollView {
@@ -347,6 +348,20 @@ private struct ToolsScreen: View {
                         Spacer()
                         Button("Сбросить") { rover.resetProfile() }
                     }
+
+                    Label(calibrationStatus, systemImage: rover.wheelProfile.source == .observed ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(rover.wheelProfile.source == .observed ? .green : .orange)
+
+                    Button {
+                        showCalibration = true
+                    } label: {
+                        Label("Определить колёса", systemImage: "wrench.adjustable")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
 
                     ForEach(["m1", "m2", "m3", "m4"], id: \.self) { motor in
                         VStack(spacing: 10) {
@@ -384,6 +399,171 @@ private struct ToolsScreen: View {
             .padding(16)
         }
         .navigationTitle("Настройка")
+        .sheet(isPresented: $showCalibration) {
+            CalibrationWizard(rover: rover)
+        }
+    }
+
+    private var calibrationStatus: String {
+        switch rover.wheelProfile.source {
+        case .observed: "Карта собрана по четырём колёсам"
+        case .manual: "Карта изменена вручную"
+        case .unverified: "Начальная карта пока не проверена"
+        }
+    }
+}
+
+private struct CalibrationWizard: View {
+    @ObservedObject var rover: RoverController
+    @Environment(\.dismiss) private var dismiss
+    @State private var step = 0
+    @State private var selectedPosition: WheelPosition?
+    @State private var movesForward: Bool?
+    @State private var observations: [String: CalibrationObservation] = [:]
+    @State private var testing = false
+    @State private var errorText = ""
+
+    private let motors = ["m1", "m2", "m3", "m4"]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Мотор \(motor.uppercased())")
+                            .font(.largeTitle.bold())
+                        Text("Шаг \(step + 1) из 4")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("Поставьте ровер носом от себя. Все четыре колеса должны свободно висеть в воздухе.")
+                        .font(.callout)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.14))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                    Button {
+                        testCurrentMotor()
+                    } label: {
+                        Label(testing ? "Колесо крутится 350 мс" : "Проверить \(motor.uppercased())", systemImage: "play.fill")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(testing)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Какое колесо крутилось?").font(.headline)
+                        ForEach(WheelPosition.allCases) { position in
+                            choiceButton(positionTitle(position), selected: selectedPosition == position) {
+                                selectedPosition = position
+                                errorText = ""
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Куда двигалась верхняя часть колеса?").font(.headline)
+                        choiceButton("К носу ровера", selected: movesForward == true) {
+                            movesForward = true
+                            errorText = ""
+                        }
+                        choiceButton("К корме ровера", selected: movesForward == false) {
+                            movesForward = false
+                            errorText = ""
+                        }
+                    }
+
+                    if !errorText.isEmpty {
+                        Text(errorText)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+
+                    Button(step == 3 ? "Сохранить карту" : "Сохранить и проверить следующий мотор") {
+                        saveStep()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity)
+                    .disabled(testing)
+                }
+                .padding(18)
+            }
+            .navigationTitle("Калибровка")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") { dismiss() }
+                }
+            }
+        }
+        .interactiveDismissDisabled(testing)
+    }
+
+    private var motor: String { motors[step] }
+
+    private func testCurrentMotor() {
+        testing = true
+        errorText = ""
+        Task {
+            await rover.testMotor(motor, power: 45)
+            try? await Task.sleep(for: .milliseconds(420))
+            testing = false
+        }
+    }
+
+    private func saveStep() {
+        guard let selectedPosition, let movesForward else {
+            errorText = "Выберите колесо и направление"
+            return
+        }
+        if observations.contains(where: { $0.key != motor && $0.value.position == selectedPosition }) {
+            errorText = "Это колесо уже назначено другому мотору"
+            return
+        }
+        observations[motor] = CalibrationObservation(position: selectedPosition, movesForward: movesForward)
+
+        if step == 3 {
+            do {
+                try rover.applyCalibration(observations)
+                dismiss()
+            } catch {
+                errorText = error.localizedDescription
+            }
+            return
+        }
+
+        step += 1
+        let saved = observations[motors[step]]
+        self.selectedPosition = saved?.position
+        self.movesForward = saved?.movesForward
+    }
+
+    private func choiceButton(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                Spacer()
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selected ? .green : .secondary)
+            }
+            .padding(12)
+            .background(selected ? Color.green.opacity(0.12) : Color(uiColor: .tertiarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func positionTitle(_ position: WheelPosition) -> String {
+        switch position {
+        case .frontLeft: "Переднее левое"
+        case .frontRight: "Переднее правое"
+        case .backLeft: "Заднее левое"
+        case .backRight: "Заднее правое"
+        }
     }
 }
 

@@ -43,4 +43,15 @@ expect(
     "motor inversion"
 )
 
+let observed = WheelProfile(
+    positions: ["m1": .backRight, "m2": .frontRight, "m3": .backLeft, "m4": .frontLeft],
+    inverted: ["m1": true, "m2": false, "m3": true, "m4": false],
+    source: .observed
+)
+expect(
+    observed.motors(for: .rotateRight, power: 55),
+    MotorValues(m1: 55, m2: -55, m3: -55, m4: 55),
+    "observed turn calibration"
+)
+
 print("PASS rover wheel vectors")

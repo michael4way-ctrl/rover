@@ -316,7 +316,13 @@ final class RoverController: ObservableObject {
     }
 
     func setPosition(_ position: WheelPosition, for motor: String) {
+        let previous = wheelProfile.positions[motor]
+        if let other = wheelProfile.positions.first(where: { $0.key != motor && $0.value == position })?.key,
+           let previous {
+            wheelProfile.positions[other] = previous
+        }
         wheelProfile.positions[motor] = position
+        wheelProfile.source = .manual
         saveProfile()
     }
 
@@ -326,7 +332,26 @@ final class RoverController: ObservableObject {
 
     func setInverted(_ value: Bool, for motor: String) {
         wheelProfile.inverted[motor] = value
+        wheelProfile.source = .manual
         saveProfile()
+    }
+
+    func applyCalibration(_ observations: [String: CalibrationObservation]) throws {
+        let motors = ["m1", "m2", "m3", "m4"]
+        guard observations.count == motors.count else {
+            throw RoverError.robot("Проверьте все четыре мотора")
+        }
+        let positions = Set(observations.values.map(\.position))
+        guard positions.count == motors.count else {
+            throw RoverError.robot("Каждому мотору нужно отдельное колесо")
+        }
+        wheelProfile = WheelProfile(
+            positions: Dictionary(uniqueKeysWithValues: motors.map { ($0, observations[$0]!.position) }),
+            inverted: Dictionary(uniqueKeysWithValues: motors.map { ($0, !observations[$0]!.movesForward) }),
+            source: .observed
+        )
+        saveProfile()
+        lastMessage = "Карта колёс сохранена по наблюдениям"
     }
 
     func resetProfile() {

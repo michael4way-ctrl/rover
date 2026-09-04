@@ -90,6 +90,17 @@ enum WheelPosition: String, CaseIterable, Codable, Identifiable, Sendable {
     var id: String { rawValue }
 }
 
+enum CalibrationSource: String, Codable, Sendable {
+    case unverified
+    case manual
+    case observed
+}
+
+struct CalibrationObservation: Equatable, Sendable {
+    let position: WheelPosition
+    let movesForward: Bool
+}
+
 struct MotorValues: Equatable, Sendable {
     let m1: Int
     let m2: Int
@@ -106,10 +117,12 @@ struct MotorValues: Equatable, Sendable {
 struct WheelProfile: Codable, Equatable, Sendable {
     var positions: [String: WheelPosition]
     var inverted: [String: Bool]
+    var source: CalibrationSource
 
     static let standard = WheelProfile(
         positions: ["m1": .frontLeft, "m2": .frontRight, "m3": .backLeft, "m4": .backRight],
-        inverted: ["m1": false, "m2": false, "m3": false, "m4": false]
+        inverted: ["m1": false, "m2": false, "m3": false, "m4": false],
+        source: .unverified
     )
 
     func motors(for direction: DriveDirection, power: Int) -> MotorValues {
