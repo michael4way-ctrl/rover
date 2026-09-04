@@ -173,11 +173,50 @@
         <div class="panel-heading">
           <div>
             <h2 id="calibration-title">Калибровка колес</h2>
-            <p class="subtle">M1-M4 на подставке, затем позиции FL FR BL BR.</p>
+            <p id="calibrationStatus" class="subtle" role="status">Предварительная карта: положение колёс не проверено.</p>
           </div>
           <button id="resetMappingButton" class="ghost-button" type="button">Сброс</button>
         </div>
 
+        <div class="calibration-actions">
+          <button id="startCalibrationButton" class="secondary-button" type="button">Определить колёса</button>
+          <button id="exportCalibrationButton" type="button" title="Скачать карту колёс" aria-label="Скачать карту колёс">↓</button>
+          <button id="importCalibrationButton" type="button" title="Загрузить карту колёс" aria-label="Загрузить карту колёс">↑</button>
+          <input id="calibrationFile" type="file" accept=".json,application/json" hidden />
+        </div>
+        <div id="calibrationWizard" class="calibration-wizard" hidden>
+          <div class="direct-heading">
+            <h3 id="calibrationStep">Мотор M1 · 1 из 4</h3>
+            <button id="cancelCalibrationButton" type="button">Отмена</button>
+          </div>
+          <p class="subtle">Ровер на подставке, все колёса свободны. Лево и право — относительно носа ровера.</p>
+          <button id="pulseCalibrationButton" class="secondary-button" type="button">Импульс M1 +45 · 350 мс</button>
+          <div class="field-grid">
+            <label class="field">
+              <span>Какое колесо вращается?</span>
+              <select id="observedPosition">
+                <option value="">Не определено</option>
+                <option value="fl">Переднее левое</option>
+                <option value="fr">Переднее правое</option>
+                <option value="bl">Заднее левое</option>
+                <option value="br">Заднее правое</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Верх колеса при +45 движется</span>
+              <select id="observedDirection">
+                <option value="">Не определено</option>
+                <option value="forward">К носу ровера</option>
+                <option value="backward">К корме ровера</option>
+              </select>
+            </label>
+          </div>
+          <p id="calibrationFeedback" class="subtle" role="status"></p>
+          <div class="calibration-actions">
+            <button id="previousCalibrationButton" type="button">Назад</button>
+            <button id="nextCalibrationButton" class="primary-button" type="button">Далее</button>
+          </div>
+        </div>
         <div id="motorMapping" class="motor-grid" aria-label="Карта моторов"></div>
 
         <div class="direct-drive">

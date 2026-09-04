@@ -547,6 +547,52 @@ meter {
   gap: 10px;
 }
 
+.motor-row header {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.motor-row select,
+.calibration-wizard select {
+  width: 100%;
+  min-width: 0;
+}
+
+.calibration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.calibration-actions button {
+  padding-inline: 14px;
+}
+
+.calibration-wizard {
+  border-block: 1px solid var(--line);
+  margin-bottom: 16px;
+  padding-block: 14px;
+}
+
+.calibration-wizard .field-grid {
+  margin-top: 14px;
+}
+
+.calibration-wizard h3 {
+  font-size: 16px;
+  margin: 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .motor-name {
   font-size: 16px;
   font-weight: 900;

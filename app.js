@@ -3,14 +3,15 @@ const OUR_ROVER_HOST = "192.168.2.23";
 const OUR_CAMERA_HOST = "192.168.2.24";
 const MOTOR_IDS = ["m1", "m2", "m3", "m4"];
 const POSITIONS = [
-  ["fl", "FL"],
-  ["fr", "FR"],
-  ["bl", "BL"],
-  ["br", "BR"],
+  ["fl", "Переднее левое"],
+  ["fr", "Переднее правое"],
+  ["bl", "Заднее левое"],
+  ["br", "Заднее правое"],
 ];
 const DEFAULT_PROFILE = {
   mapping: { m1: "fl", m2: "fr", m3: "bl", m4: "br" },
   invert: { m1: false, m2: false, m3: false, m4: false },
+  source: "unverified",
 };
 
 const state = {
@@ -31,6 +32,8 @@ const state = {
   driveBusy: false,
   driveRevision: 0,
   sensorBusy: false,
+  calibration: null,
+  testUntil: 0,
 };
 
 const el = {
@@ -72,6 +75,20 @@ const el = {
   lineThresholdValue: document.querySelector("#lineThresholdValue"),
   motorMapping: document.querySelector("#motorMapping"),
   resetMappingButton: document.querySelector("#resetMappingButton"),
+  calibrationStatus: document.querySelector("#calibrationStatus"),
+  startCalibrationButton: document.querySelector("#startCalibrationButton"),
+  exportCalibrationButton: document.querySelector("#exportCalibrationButton"),
+  importCalibrationButton: document.querySelector("#importCalibrationButton"),
+  calibrationFile: document.querySelector("#calibrationFile"),
+  calibrationWizard: document.querySelector("#calibrationWizard"),
+  calibrationStep: document.querySelector("#calibrationStep"),
+  calibrationFeedback: document.querySelector("#calibrationFeedback"),
+  pulseCalibrationButton: document.querySelector("#pulseCalibrationButton"),
+  cancelCalibrationButton: document.querySelector("#cancelCalibrationButton"),
+  previousCalibrationButton: document.querySelector("#previousCalibrationButton"),
+  nextCalibrationButton: document.querySelector("#nextCalibrationButton"),
+  observedPosition: document.querySelector("#observedPosition"),
+  observedDirection: document.querySelector("#observedDirection"),
   directMotors: document.querySelector("#directMotors"),
   sendDirectButton: document.querySelector("#sendDirectButton"),
   beepButton: document.querySelector("#beepButton"),
@@ -291,6 +308,7 @@ function computePositionSpeeds(vector) {
 }
 
 function positionSpeedsToMotors(positionSpeeds) {
+  validateProfile(state.profile);
   const motors = {};
   for (const id of MOTOR_IDS) {
     const position = state.profile.mapping[id];
@@ -336,6 +354,10 @@ async function sendVector(vector) {
 }
 
 function startDrive(vector) {
+  if (state.calibration || Date.now() < state.testUntil) {
+    setMessage("Завершите проверку колеса перед движением");
+    return;
+  }
   if (!state.connected || state.stopRequest) return;
   state.activeVector = vector;
   state.driveRevision += 1;
@@ -569,7 +591,160 @@ function setSensorPolling(enabled) {
   }
 }
 
+function validateProfile(profile) {
+  const positions = new Set();
+  for (const id of MOTOR_IDS) {
+    const position = profile?.mapping?.[id];
+    if (!POSITIONS.some(([key]) => key === position)) throw new Error(`Не задано положение ${id.toUpperCase()}`);
+    if (positions.has(position)) throw new Error("Два мотора назначены одному колесу. Определите колёса заново");
+    if (typeof profile?.invert?.[id] !== "boolean") throw new Error(`Не задано направление ${id.toUpperCase()}`);
+    positions.add(position);
+  }
+}
+
+function profileFromObservations(observations) {
+  const profile = { mapping: {}, invert: {}, source: "observed" };
+  for (const id of MOTOR_IDS) {
+    const observation = observations[id];
+    if (!observation || !["forward", "backward"].includes(observation.direction)) {
+      throw new Error(`Укажите направление вращения ${id.toUpperCase()}`);
+    }
+    profile.mapping[id] = observation.position;
+    profile.invert[id] = observation.direction === "backward";
+  }
+  validateProfile(profile);
+  return profile;
+}
+
+function reassignPosition(profile, id, position) {
+  if (!MOTOR_IDS.includes(id) || !POSITIONS.some(([key]) => key === position)) throw new Error("Неверное положение колеса");
+  const previous = profile.mapping[id];
+  const other = MOTOR_IDS.find((motor) => motor !== id && profile.mapping[motor] === position);
+  if (other) profile.mapping[other] = previous;
+  profile.mapping[id] = position;
+  profile.source = "manual";
+}
+
+function requireCalibrationIdle() {
+  if (state.activeVector || state.driveBusy || state.wheelRequest || state.stopRequest || Date.now() < state.testUntil) {
+    throw new Error("Дождитесь остановки и завершения текущего импульса");
+  }
+}
+
+function renderCalibrationStep() {
+  const calibration = state.calibration;
+  el.calibrationWizard.hidden = !calibration;
+  el.motorMapping.hidden = Boolean(calibration);
+  for (const control of [el.startCalibrationButton, el.resetMappingButton, el.importCalibrationButton]) {
+    control.disabled = Boolean(calibration);
+  }
+  if (!calibration) return;
+  const id = MOTOR_IDS[calibration.step];
+  const observation = calibration.observations[id];
+  el.calibrationStep.textContent = `Мотор ${id.toUpperCase()} · ${calibration.step + 1} из 4`;
+  el.pulseCalibrationButton.textContent = `Импульс ${id.toUpperCase()} +45 · 350 мс`;
+  el.observedPosition.value = observation?.position || "";
+  el.observedDirection.value = observation?.direction || "";
+  el.previousCalibrationButton.disabled = calibration.step === 0;
+  el.nextCalibrationButton.textContent = calibration.step === 3 ? "Применить карту" : "Далее";
+  el.calibrationFeedback.textContent = "";
+}
+
+function startCalibration() {
+  try {
+    requireCalibrationIdle();
+    state.keyboard.clear();
+    state.calibration = { step: 0, observations: {} };
+    renderCalibrationStep();
+  } catch (error) {
+    handleError(error);
+  }
+}
+
+function recordCalibrationStep() {
+  const calibration = state.calibration;
+  const id = MOTOR_IDS[calibration.step];
+  const position = el.observedPosition.value;
+  const direction = el.observedDirection.value;
+  if (!position || !direction) throw new Error("Выберите колесо и направление его вращения");
+  const duplicate = MOTOR_IDS.find((motor) => motor !== id && calibration.observations[motor]?.position === position);
+  if (duplicate) throw new Error(`Это колесо уже назначено ${duplicate.toUpperCase()}. Проверьте положение`);
+  calibration.observations[id] = { position, direction };
+}
+
+function nextCalibrationStep() {
+  try {
+    requireCalibrationIdle();
+    if (!state.calibration) return;
+    recordCalibrationStep();
+    if (state.calibration.step < 3) {
+      state.calibration.step += 1;
+    } else {
+      state.profile = profileFromObservations(state.calibration.observations);
+      state.calibration = null;
+      saveSettings();
+      renderMotorMapping();
+      logEvent("Карта колёс применена по наблюдениям");
+    }
+    renderCalibrationStep();
+  } catch (error) {
+    el.calibrationFeedback.textContent = error.message;
+  }
+}
+
+function exportCalibration() {
+  try {
+    validateProfile(state.profile);
+    const data = { version: 1, rover: OUR_ROVER_HOST, profile: state.profile };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "rover-02-wheels.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    handleError(error);
+  }
+}
+
+function parseCalibrationFile(text) {
+  const data = JSON.parse(text);
+  if (data?.version !== 1 || data?.rover !== OUR_ROVER_HOST) throw new Error("Нужна карта колёс нашего ровера 192.168.2.23");
+  validateProfile(data.profile);
+  const profile = { mapping: {}, invert: {}, source: "manual" };
+  for (const id of MOTOR_IDS) {
+    profile.mapping[id] = data.profile.mapping[id];
+    profile.invert[id] = data.profile.invert[id];
+  }
+  if (["observed", "unverified"].includes(data.profile.source)) profile.source = data.profile.source;
+  return profile;
+}
+
+async function importCalibration() {
+  try {
+    const file = el.calibrationFile.files[0];
+    if (!file) return;
+    if (file.size > 16384) throw new Error("Слишком большой файл карты колёс");
+    const profile = parseCalibrationFile(await file.text());
+    requireCalibrationIdle();
+    if (state.calibration) throw new Error("Завершите пошаговую настройку");
+    state.profile = profile;
+    saveSettings();
+    renderMotorMapping();
+    logEvent("Карта колёс загружена из файла");
+  } catch (error) {
+    handleError(error);
+  } finally {
+    el.calibrationFile.value = "";
+  }
+}
+
 function renderMotorMapping() {
+  el.calibrationStatus.textContent = state.profile.source === "observed"
+    ? "Карта заполнена по наблюдениям за четырьмя колёсами"
+    : state.profile.source === "manual"
+      ? "Карта изменена вручную"
+      : "Предварительная карта: положение колёс не проверено";
   el.motorMapping.replaceChildren();
   for (const id of MOTOR_IDS) {
     const row = document.createElement("article");
@@ -595,12 +770,25 @@ function renderMotorMapping() {
     select.value = state.profile.mapping[id];
     invert.checked = state.profile.invert[id];
     select.addEventListener("change", () => {
-      state.profile.mapping[id] = select.value;
-      saveSettings();
+      try {
+        requireCalibrationIdle();
+        reassignPosition(state.profile, id, select.value);
+        saveSettings();
+      } catch (error) {
+        handleError(error);
+      }
+      renderMotorMapping();
     });
     invert.addEventListener("change", () => {
-      state.profile.invert[id] = invert.checked;
-      saveSettings();
+      try {
+        requireCalibrationIdle();
+        state.profile.invert[id] = invert.checked;
+        state.profile.source = "manual";
+        saveSettings();
+      } catch (error) {
+        handleError(error);
+      }
+      renderMotorMapping();
     });
     for (const button of row.querySelectorAll("[data-test]")) {
       button.addEventListener("click", () => testMotor(id, Number(button.dataset.power)));
@@ -632,18 +820,24 @@ function renderDirectMotors() {
 }
 
 async function testMotor(id, power) {
-  if (state.activeVector || Date.now() - state.lastCommandAt < 55) return;
-  const payload = { m1: 0, m2: 0, m3: 0, m4: 0, [id]: power };
   try {
+    requireCalibrationIdle();
+    if (!MOTOR_IDS.includes(id) || ![45, -45].includes(power)) throw new Error("Неверный тест мотора");
+    if (Date.now() - state.lastCommandAt < 55) throw new Error("Дождитесь завершения команды");
+    const payload = { m1: 0, m2: 0, m3: 0, m4: 0, [id]: power };
+    state.testUntil = Date.now() + 350;
     await sendWheels(payload, 350, `${id.toUpperCase()} ${power}`);
+    state.testUntil = Date.now() + 350;
     logEvent(`Тест ${id.toUpperCase()}: ${power}`);
+    return true;
   } catch (error) {
     handleError(error);
+    return false;
   }
 }
 
 async function sendDirect() {
-  if (state.activeVector || Date.now() - state.lastCommandAt < 55) return;
+  if (state.calibration || Date.now() < state.testUntil || state.activeVector || Date.now() - state.lastCommandAt < 55) return;
   try {
     await sendWheels(state.direct, getDriveTiming().timeout, "direct");
     logEvent(`Direct: ${MOTOR_IDS.map((id) => state.direct[id]).join("/")}`);
@@ -733,6 +927,7 @@ function bindKeyboard() {
     if (["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.code)) {
       event.preventDefault();
       if (event.repeat) return;
+      if (state.calibration || Date.now() < state.testUntil) return;
       state.keyboard.add(event.code);
       updateKeyboardDrive();
     }
@@ -760,11 +955,45 @@ function bindControls() {
   el.cameraOffButton.addEventListener("click", stopCamera);
   el.refreshSensorsButton.addEventListener("click", refreshSensors);
   el.pollSensors.addEventListener("change", () => setSensorPolling(el.pollSensors.checked));
+  el.startCalibrationButton.addEventListener("click", startCalibration);
+  el.nextCalibrationButton.addEventListener("click", nextCalibrationStep);
+  el.previousCalibrationButton.addEventListener("click", () => {
+    try {
+      requireCalibrationIdle();
+      if (!state.calibration || state.calibration.step === 0) return;
+      state.calibration.step -= 1;
+      renderCalibrationStep();
+    } catch (error) {
+      el.calibrationFeedback.textContent = error.message;
+    }
+  });
+  el.cancelCalibrationButton.addEventListener("click", () => {
+    state.calibration = null;
+    renderCalibrationStep();
+  });
+  el.pulseCalibrationButton.addEventListener("click", async () => {
+    if (!state.calibration) return;
+    const id = MOTOR_IDS[state.calibration.step];
+    el.pulseCalibrationButton.disabled = true;
+    const success = await testMotor(id, 45);
+    el.pulseCalibrationButton.disabled = false;
+    if (state.calibration && MOTOR_IDS[state.calibration.step] === id) {
+      el.calibrationFeedback.textContent = success ? `Импульс ${id.toUpperCase()} отправлен` : el.lastMessage.textContent;
+    }
+  });
+  el.exportCalibrationButton.addEventListener("click", exportCalibration);
+  el.importCalibrationButton.addEventListener("click", () => el.calibrationFile.click());
+  el.calibrationFile.addEventListener("change", importCalibration);
   el.resetMappingButton.addEventListener("click", () => {
-    state.profile = cloneProfile(DEFAULT_PROFILE);
-    renderMotorMapping();
-    saveSettings();
-    logEvent("Карта моторов сброшена");
+    try {
+      requireCalibrationIdle();
+      state.profile = cloneProfile(DEFAULT_PROFILE);
+      renderMotorMapping();
+      saveSettings();
+      logEvent("Карта моторов сброшена");
+    } catch (error) {
+      handleError(error);
+    }
   });
   el.sendDirectButton.addEventListener("click", sendDirect);
   el.beepButton.addEventListener("click", beep);
