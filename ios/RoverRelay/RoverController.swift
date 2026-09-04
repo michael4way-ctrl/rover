@@ -34,10 +34,10 @@ private actor RoverAPI {
         try await json(path: path)
     }
 
-    func wheels(_ motors: MotorValues, timeout: Int) async throws {
+    func wheels(_ motors: MotorValues, timeout: Int, sonarControlToken: UUID? = nil) async throws {
         var query = motors.query
         query["timeout"] = String(timeout)
-        _ = try await json(path: "/wheels", query: query)
+        _ = try await json(path: "/wheels", query: query, sonarControlToken: sonarControlToken)
     }
 
     func stop() async throws {
@@ -65,8 +65,8 @@ private actor RoverAPI {
         try await data(base: camera, path: "/snapshot", query: ["t": String(Int(Date().timeIntervalSince1970 * 1000))])
     }
 
-    private func json(path: String, query: [String: String] = [:]) async throws -> [String: Any] {
-        let body = try await data(base: chassis, path: path, query: query)
+    private func json(path: String, query: [String: String] = [:], sonarControlToken: UUID? = nil) async throws -> [String: Any] {
+        let body = try await data(base: chassis, path: path, query: query, sonarControlToken: sonarControlToken)
         guard let object = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
             throw RoverError.invalidResponse
         }
@@ -76,8 +76,14 @@ private actor RoverAPI {
         return object
     }
 
-    private func data(base: URL, path: String, query: [String: String]) async throws -> Data {
-        RoverRequestGate.shared.waitForTurn()
+    private func data(base: URL, path: String, query: [String: String], sonarControlToken: UUID? = nil) async throws -> Data {
+        if let sonarControlToken {
+            guard RoverRequestGate.shared.waitForSonarTurn(sonarControlToken) else {
+                throw CancellationError()
+            }
+        } else {
+            RoverRequestGate.shared.waitForTurn()
+        }
         try Task.checkCancellation()
 
         var components = URLComponents(url: base.appending(path: path), resolvingAgainstBaseURL: false)!
@@ -132,6 +138,7 @@ final class RoverController: ObservableObject {
     private var driveTask: Task<Void, Never>?
     private var sensorTask: Task<Void, Never>?
     private var sonarFollowTask: Task<Void, Never>?
+    private var sonarRunID: UUID?
     private let profileKey = "rover-wheel-profile"
 
     init() {
@@ -268,10 +275,13 @@ final class RoverController: ObservableObject {
         sensorTask?.cancel()
         sensorTask = nil
         automaticSensors = false
-        sonarFollowTask?.cancel()
+        cancelSonarFollowing()
         sonarFollowEnabled = true
         sonarFollowState = .waiting
         lastMessage = "Жду руку перед сонаром"
+
+        let runID = RoverRequestGate.shared.beginSonarControl()
+        sonarRunID = runID
 
         let policy = SonarFollowPolicy(
             targetCM: sonarTargetDistance,
@@ -284,19 +294,53 @@ final class RoverController: ObservableObject {
         sonarFollowTask = Task { [weak self] in
             guard let self else { return }
             var wasMoving = false
+            var targetTracker = SonarTargetTracker(
+                acquisitionRangeCM: 8...60,
+                trackingRangeCM: 8...100,
+                maximumAcquisitionDeltaCM: 6,
+                maximumJumpCM: 20
+            )
 
             do {
                 try await self.api.stop()
+                guard self.isCurrentSonarRun(runID) else { return }
                 self.commandCount += 1
             } catch {
-                self.finishSonarFollowingWithError(error)
+                self.finishSonarFollowingWithError(error, runID: runID)
                 return
             }
 
             while !Task.isCancelled {
+                guard self.isCurrentSonarRun(runID), RoverRequestGate.shared.ownsSonarControl(runID) else {
+                    self.finishSonarFollowingStoppedExternally(runID)
+                    return
+                }
                 do {
                     let value = try await self.api.sensors(path: "/sonar")
+                    guard self.isCurrentSonarRun(runID), RoverRequestGate.shared.ownsSonarControl(runID) else {
+                        self.finishSonarFollowingStoppedExternally(runID)
+                        return
+                    }
                     self.applySensors(value)
+                    let target = targetTracker.observe(
+                        distanceCM: self.sensors.sonarCM,
+                        valid: self.sensors.sonarValid
+                    )
+
+                    switch target {
+                    case .acquiring:
+                        self.sonarFollowState = .waiting
+                        self.lastMessage = "Держите руку перед сонаром"
+                        try? await Task.sleep(for: .milliseconds(120))
+                        continue
+                    case .lost:
+                        if wasMoving { try await self.stopAfterSonarMovement() }
+                        self.finishSonarFollowingAfterTargetLoss(runID)
+                        return
+                    case .tracked:
+                        break
+                    }
+
                     let decision = policy.decision(
                         distanceCM: self.sensors.sonarCM,
                         valid: self.sensors.sonarValid,
@@ -306,7 +350,7 @@ final class RoverController: ObservableObject {
                     switch decision {
                     case .advance(let power):
                         let motors = profile.motors(for: .forward, power: power)
-                        try await self.api.wheels(motors, timeout: 300)
+                        try await self.api.wheels(motors, timeout: 300, sonarControlToken: runID)
                         self.commandCount += 1
                         self.sonarFollowState = .following
                         self.lastMessage = "Еду к руке · \(power)%"
@@ -330,8 +374,12 @@ final class RoverController: ObservableObject {
                 } catch is CancellationError {
                     return
                 } catch {
+                    guard self.isCurrentSonarRun(runID) else { return }
+                    if let urlError = error as? URLError, urlError.code == .cancelled {
+                        return
+                    }
                     try? await self.api.stop()
-                    self.finishSonarFollowingWithError(error)
+                    self.finishSonarFollowingWithError(error, runID: runID)
                     return
                 }
 
@@ -357,6 +405,10 @@ final class RoverController: ObservableObject {
     }
 
     private func cancelSonarFollowing() {
+        if let sonarRunID {
+            RoverRequestGate.shared.endSonarControl(sonarRunID)
+        }
+        sonarRunID = nil
         sonarFollowTask?.cancel()
         sonarFollowTask = nil
         sonarFollowEnabled = false
@@ -368,12 +420,36 @@ final class RoverController: ObservableObject {
         commandCount += 1
     }
 
-    private func finishSonarFollowingWithError(_ error: Error) {
+    private func finishSonarFollowingWithError(_ error: Error, runID: UUID? = nil) {
+        if let runID, !isCurrentSonarRun(runID) { return }
         cancelSonarFollowing()
         sonarFollowState = .error
         connected = false
         connectionText = "Следование остановлено"
         lastMessage = readable(error)
+    }
+
+    private func finishSonarFollowingStoppedExternally(_ runID: UUID) {
+        guard isCurrentSonarRun(runID) else { return }
+        sonarRunID = nil
+        sonarFollowTask = nil
+        sonarFollowEnabled = false
+        sonarFollowState = .idle
+        lastMessage = "Следование остановлено командой с Mac"
+    }
+
+    private func finishSonarFollowingAfterTargetLoss(_ runID: UUID) {
+        guard isCurrentSonarRun(runID) else { return }
+        RoverRequestGate.shared.endSonarControl(runID)
+        sonarRunID = nil
+        sonarFollowTask = nil
+        sonarFollowEnabled = false
+        sonarFollowState = .lost
+        lastMessage = "Цель потеряна — включите режим снова"
+    }
+
+    private func isCurrentSonarRun(_ runID: UUID) -> Bool {
+        sonarRunID == runID && !Task.isCancelled
     }
 
     func takeSnapshot() async {

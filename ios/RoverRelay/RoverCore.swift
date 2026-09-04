@@ -5,15 +5,79 @@ final class RoverRequestGate: @unchecked Sendable {
 
     private let lock = NSLock()
     private var nextRequestAt = Date.distantPast
+    private var sonarControlToken: UUID?
 
     private init() {}
 
     func waitForTurn() {
         lock.lock()
-        let reserved = max(Date(), nextRequestAt)
-        nextRequestAt = reserved.addingTimeInterval(0.055)
+        let reserved = reserveTurn()
         lock.unlock()
 
+        wait(until: reserved)
+    }
+
+    func beginSonarControl() -> UUID {
+        lock.lock()
+        defer { lock.unlock() }
+        let token = UUID()
+        sonarControlToken = token
+        return token
+    }
+
+    func endSonarControl(_ token: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        if sonarControlToken == token {
+            sonarControlToken = nil
+        }
+    }
+
+    func ownsSonarControl(_ token: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return sonarControlToken == token
+    }
+
+    func waitForSonarTurn(_ token: UUID) -> Bool {
+        lock.lock()
+        guard sonarControlToken == token else {
+            lock.unlock()
+            return false
+        }
+        let reserved = reserveTurn()
+        lock.unlock()
+
+        wait(until: reserved)
+        return true
+    }
+
+    func waitForRelayedTurn(target: String) -> Bool {
+        let isWheelCommand = target == "/wheels" || target.hasPrefix("/wheels?")
+        let isStopCommand = target == "/stop" || target.hasPrefix("/stop?")
+
+        lock.lock()
+        if isWheelCommand, sonarControlToken != nil {
+            lock.unlock()
+            return false
+        }
+        if isStopCommand {
+            sonarControlToken = nil
+        }
+        let reserved = reserveTurn()
+        lock.unlock()
+
+        wait(until: reserved)
+        return true
+    }
+
+    private func reserveTurn() -> Date {
+        let reserved = max(Date(), nextRequestAt)
+        nextRequestAt = reserved.addingTimeInterval(0.055)
+        return reserved
+    }
+
+    private func wait(until reserved: Date) {
         let delay = reserved.timeIntervalSinceNow
         if delay > 0 {
             Thread.sleep(forTimeInterval: delay)
@@ -182,6 +246,72 @@ enum SonarFollowState: Equatable, Sendable {
     case tooClose
     case lost
     case error
+}
+
+enum SonarTargetObservation: Equatable, Sendable {
+    case acquiring
+    case tracked(distanceCM: Double)
+    case lost
+}
+
+struct SonarTargetTracker: Sendable {
+    let acquisitionRangeCM: ClosedRange<Double>
+    let trackingRangeCM: ClosedRange<Double>
+    let maximumAcquisitionDeltaCM: Double
+    let maximumJumpCM: Double
+
+    private enum State: Sendable {
+        case waiting(candidateCM: Double?)
+        case tracking(lastCM: Double)
+        case lost
+    }
+
+    private var state: State = .waiting(candidateCM: nil)
+
+    init(
+        acquisitionRangeCM: ClosedRange<Double>,
+        trackingRangeCM: ClosedRange<Double>,
+        maximumAcquisitionDeltaCM: Double,
+        maximumJumpCM: Double
+    ) {
+        self.acquisitionRangeCM = acquisitionRangeCM
+        self.trackingRangeCM = trackingRangeCM
+        self.maximumAcquisitionDeltaCM = maximumAcquisitionDeltaCM
+        self.maximumJumpCM = maximumJumpCM
+    }
+
+    mutating func observe(distanceCM: Double?, valid: Bool) -> SonarTargetObservation {
+        switch state {
+        case .lost:
+            return .lost
+        case .waiting(let candidateCM):
+            guard valid,
+                  let distanceCM,
+                  distanceCM.isFinite,
+                  acquisitionRangeCM.contains(distanceCM) else {
+                state = .waiting(candidateCM: nil)
+                return .acquiring
+            }
+
+            if let candidateCM, abs(distanceCM - candidateCM) <= maximumAcquisitionDeltaCM {
+                state = .tracking(lastCM: distanceCM)
+                return .tracked(distanceCM: distanceCM)
+            }
+            state = .waiting(candidateCM: distanceCM)
+            return .acquiring
+        case .tracking(let lastCM):
+            guard valid,
+                  let distanceCM,
+                  distanceCM.isFinite,
+                  trackingRangeCM.contains(distanceCM),
+                  abs(distanceCM - lastCM) <= maximumJumpCM else {
+                state = .lost
+                return .lost
+            }
+            state = .tracking(lastCM: distanceCM)
+            return .tracked(distanceCM: distanceCM)
+        }
+    }
 }
 
 struct SonarFollowPolicy: Sendable {

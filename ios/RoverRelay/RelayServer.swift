@@ -143,7 +143,16 @@ final class RelayServer: ObservableObject {
             return
         }
 
-        RoverRequestGate.shared.waitForTurn()
+        guard RoverRequestGate.shared.waitForRelayedTurn(target: incoming.target) else {
+            respond(
+                status: 409,
+                contentType: "application/json",
+                body: Data("{\"ok\":false,\"error\":\"sonar following controls the wheels\"}".utf8),
+                on: connection
+            )
+            publishEvent("Команда колёс отклонена: включено следование")
+            return
+        }
 
         var request = URLRequest(url: url)
         request.httpMethod = incoming.method

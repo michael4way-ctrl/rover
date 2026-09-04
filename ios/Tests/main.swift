@@ -14,6 +14,13 @@ func expectFollow(_ actual: SonarFollowDecision, _ expected: SonarFollowDecision
     }
 }
 
+func expectTarget(_ actual: SonarTargetObservation, _ expected: SonarTargetObservation, _ label: String) {
+    guard actual == expected else {
+        fputs("FAIL \(label): \(actual) != \(expected)\n", stderr)
+        exit(1)
+    }
+}
+
 let profile = WheelProfile.standard
 
 expect(
@@ -93,5 +100,44 @@ expectFollow(
     .advance(power: 45),
     "large gap respects power limit"
 )
+
+var tracker = SonarTargetTracker(
+    acquisitionRangeCM: 8...60,
+    trackingRangeCM: 8...100,
+    maximumAcquisitionDeltaCM: 6,
+    maximumJumpCM: 20
+)
+expectTarget(tracker.observe(distanceCM: 42, valid: true), .acquiring, "first echo does not move")
+expectTarget(tracker.observe(distanceCM: 40, valid: true), .tracked(distanceCM: 40), "second stable echo captures target")
+expectTarget(tracker.observe(distanceCM: 48, valid: true), .tracked(distanceCM: 48), "smooth hand movement stays captured")
+expectTarget(tracker.observe(distanceCM: 82, valid: true), .lost, "large distance jump loses hand")
+expectTarget(tracker.observe(distanceCM: 50, valid: true), .lost, "lost target cannot silently reacquire")
+
+var missingTracker = SonarTargetTracker(
+    acquisitionRangeCM: 8...60,
+    trackingRangeCM: 8...100,
+    maximumAcquisitionDeltaCM: 6,
+    maximumJumpCM: 20
+)
+expectTarget(missingTracker.observe(distanceCM: nil, valid: false), .acquiring, "missing echo waits without moving")
+
+let gate = RoverRequestGate.shared
+let sonarToken = gate.beginSonarControl()
+guard !gate.waitForRelayedTurn(target: "/wheels?m1=40") else {
+    fputs("FAIL relay wheel command must be blocked during sonar following\n", stderr)
+    exit(1)
+}
+guard gate.waitForSonarTurn(sonarToken) else {
+    fputs("FAIL current sonar run must own wheel commands\n", stderr)
+    exit(1)
+}
+guard gate.waitForRelayedTurn(target: "/stop"), !gate.ownsSonarControl(sonarToken) else {
+    fputs("FAIL relayed STOP must revoke sonar following\n", stderr)
+    exit(1)
+}
+guard !gate.waitForSonarTurn(sonarToken) else {
+    fputs("FAIL revoked sonar run must not resume\n", stderr)
+    exit(1)
+}
 
 print("PASS rover wheel vectors and sonar following policy")
