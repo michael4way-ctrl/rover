@@ -204,13 +204,31 @@ final class RoverController: ObservableObject {
             guard let self else { return }
             if let pendingStop { await pendingStop.value }
             guard !Task.isCancelled, self.activeDirection == direction else { return }
+            var consecutiveNetworkFailures = 0
             while !Task.isCancelled {
                 do {
                     try await self.api.wheels(motors, timeout: pulse)
                     self.commandCount += 1
+                    consecutiveNetworkFailures = 0
                 } catch is CancellationError {
                     return
                 } catch {
+                    if let urlError = error as? URLError, urlError.code == .cancelled {
+                        return
+                    }
+                    if let urlError = error as? URLError, urlError.code == .timedOut {
+                        self.lastMessage = "Ответ задержался — повторяю команду"
+                        try? await Task.sleep(for: .milliseconds(180))
+                        continue
+                    }
+                    if error is URLError {
+                        consecutiveNetworkFailures += 1
+                        if consecutiveNetworkFailures < 3 {
+                            self.lastMessage = "Связь прервалась — повторяю"
+                            try? await Task.sleep(for: .milliseconds(250))
+                            continue
+                        }
+                    }
                     self.connected = false
                     self.connectionText = "Управление остановлено"
                     self.lastMessage = self.readable(error)
@@ -426,9 +444,13 @@ final class RoverController: ObservableObject {
                     }
                     try? await self.api.stop()
                     wasMoving = false
-                    if error is URLError {
+                    if let urlError = error as? URLError, urlError.code == .timedOut {
+                        let targetStatus = targetTracker.observe(distanceCM: nil, valid: false)
+                        if targetStatus == .lost {
+                            targetTracker = makeTargetTracker()
+                        }
                         self.sonarFollowState = .waiting
-                        self.lastMessage = "Связь с ровером прервалась — стою и пробую снова"
+                        self.lastMessage = "Ответ сонара задержался — стою и пробую снова"
                         try? await Task.sleep(for: .milliseconds(250))
                         continue
                     }

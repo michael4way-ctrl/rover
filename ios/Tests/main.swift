@@ -68,7 +68,7 @@ expect(
     "observed turn calibration"
 )
 
-let follower = SonarFollowPolicy(targetCM: 30, toleranceCM: 5, trackingRangeCM: 8...100)
+let follower = SonarFollowPolicy(targetCM: 30, toleranceCM: 5, trackingRangeCM: 5...120)
 
 expectFollow(
     follower.decision(distanceCM: nil, valid: false, maxPower: 45),
@@ -76,7 +76,7 @@ expectFollow(
     "missing hand stops"
 )
 expectFollow(
-    follower.decision(distanceCM: 120, valid: true, maxPower: 45),
+    follower.decision(distanceCM: 130, valid: true, maxPower: 45),
     .lost,
     "object outside tracking range stops"
 )
@@ -86,7 +86,7 @@ expectFollow(
     "close hand moves rover back"
 )
 expectFollow(
-    follower.decision(distanceCM: 5, valid: true, maxPower: 45),
+    follower.decision(distanceCM: 3, valid: true, maxPower: 45),
     .tooClose,
     "distance below sensor range stops"
 )
