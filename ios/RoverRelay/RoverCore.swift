@@ -6,6 +6,7 @@ final class RoverRequestGate: @unchecked Sendable {
     private let lock = NSLock()
     private var nextRequestAt = Date.distantPast
     private var sonarControlToken: UUID?
+    private var relayedMovementTasks: [UUID: URLSessionDataTask] = [:]
 
     private init() {}
 
@@ -19,9 +20,13 @@ final class RoverRequestGate: @unchecked Sendable {
 
     func beginSonarControl() -> UUID {
         lock.lock()
-        defer { lock.unlock() }
         let token = UUID()
         sonarControlToken = token
+        let tasksToCancel = Array(relayedMovementTasks.values)
+        relayedMovementTasks.removeAll()
+        lock.unlock()
+
+        tasksToCancel.forEach { $0.cancel() }
         return token
     }
 
@@ -49,7 +54,10 @@ final class RoverRequestGate: @unchecked Sendable {
         lock.unlock()
 
         wait(until: reserved)
-        return true
+        lock.lock()
+        let stillOwned = sonarControlToken == token
+        lock.unlock()
+        return stillOwned
     }
 
     func waitForRelayedTurn(target: String) -> Bool {
@@ -69,6 +77,20 @@ final class RoverRequestGate: @unchecked Sendable {
 
         wait(until: reserved)
         return true
+    }
+
+    func registerRelayedMovementTask(_ task: URLSessionDataTask, id: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard sonarControlToken == nil else { return false }
+        relayedMovementTasks[id] = task
+        return true
+    }
+
+    func finishRelayedMovementTask(id: UUID) {
+        lock.lock()
+        relayedMovementTasks[id] = nil
+        lock.unlock()
     }
 
     private func reserveTurn() -> Date {
@@ -236,12 +258,14 @@ enum SonarFollowDecision: Equatable, Sendable {
     case tooClose
     case holding
     case advance(power: Int)
+    case retreat(power: Int)
 }
 
 enum SonarFollowState: Equatable, Sendable {
     case idle
     case waiting
     case following
+    case backing
     case holding
     case tooClose
     case lost
@@ -320,22 +344,28 @@ struct SonarFollowPolicy: Sendable {
     let trackingRangeCM: ClosedRange<Double>
 
     func decision(distanceCM: Double?, valid: Bool, maxPower: Int) -> SonarFollowDecision {
-        guard valid,
-              let distanceCM,
-              distanceCM.isFinite,
-              trackingRangeCM.contains(distanceCM) else {
+        guard valid, let distanceCM, distanceCM.isFinite else {
             return .lost
         }
 
-        if distanceCM < targetCM - toleranceCM {
+        if distanceCM < trackingRangeCM.lowerBound {
             return .tooClose
+        }
+        guard distanceCM <= trackingRangeCM.upperBound else { return .lost }
+
+        if distanceCM < targetCM - toleranceCM {
+            return .retreat(power: power(forErrorCM: targetCM - distanceCM, maxPower: maxPower))
         }
         if distanceCM <= targetCM + toleranceCM {
             return .holding
         }
 
-        let requestedPower = Int(((distanceCM - targetCM) * 1.2).rounded())
+        return .advance(power: power(forErrorCM: distanceCM - targetCM, maxPower: maxPower))
+    }
+
+    private func power(forErrorCM errorCM: Double, maxPower: Int) -> Int {
+        let requestedPower = Int((errorCM * 1.2).rounded())
         let limitedMaximum = min(60, max(35, maxPower))
-        return .advance(power: min(limitedMaximum, max(35, requestedPower)))
+        return min(limitedMaximum, max(35, requestedPower))
     }
 }

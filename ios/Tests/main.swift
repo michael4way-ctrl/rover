@@ -82,8 +82,13 @@ expectFollow(
 )
 expectFollow(
     follower.decision(distanceCM: 22, valid: true, maxPower: 45),
+    .retreat(power: 35),
+    "close hand moves rover back"
+)
+expectFollow(
+    follower.decision(distanceCM: 5, valid: true, maxPower: 45),
     .tooClose,
-    "close hand stops instead of reversing"
+    "distance below sensor range stops"
 )
 expectFollow(
     follower.decision(distanceCM: 32, valid: true, maxPower: 45),

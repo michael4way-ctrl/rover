@@ -58,7 +58,7 @@ private struct SonarFollowScreen: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Следовать за рукой")
                                 .font(.title2.bold())
-                            Text("Ровер едет прямо, пока удерживает выбранную дистанцию")
+                            Text("Ровер подъезжает или отъезжает, чтобы держать выбранную дистанцию")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -112,7 +112,7 @@ private struct SonarFollowScreen: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Как пользоваться", systemImage: "hand.point.up.left.fill")
                         .font(.headline)
-                    Text("Поставьте ладонь перед сонаром и включите режим. После двух согласованных замеров медленно отводите руку по прямой — ровер поедет следом. Если цель потеряна, режим выключится; для нового захвата включите его снова.")
+                    Text("Поставьте ладонь перед сонаром и включите режим. После двух согласованных замеров отводите руку — ровер подъедет; приближайте — он отъедет. Если цель потеряна, режим выключится; для нового захвата включите его снова.")
                         .font(.callout)
                     Text("Сонар измеряет только расстояние: он не различает руку, коробку и другие предметы и не видит, с какой стороны находится объект.")
                         .font(.caption)
@@ -143,6 +143,7 @@ private struct SonarFollowScreen: View {
         case .idle: "Режим выключен"
         case .waiting: "Жду руку"
         case .following: "Еду к руке"
+        case .backing: "Отъезжаю от руки"
         case .holding: "Держу дистанцию"
         case .tooClose: "Слишком близко — стою"
         case .lost: "Цель потеряна — стою"
@@ -152,7 +153,7 @@ private struct SonarFollowScreen: View {
 
     private var stateSymbol: String {
         switch rover.sonarFollowState {
-        case .following: "car.side.fill"
+        case .following, .backing: "car.side.fill"
         case .holding: "checkmark.circle.fill"
         case .tooClose, .lost, .error: "exclamationmark.octagon.fill"
         case .idle, .waiting: "sensor.tag.radiowaves.forward.fill"
@@ -161,7 +162,7 @@ private struct SonarFollowScreen: View {
 
     private var stateColor: Color {
         switch rover.sonarFollowState {
-        case .following, .holding: .green
+        case .following, .backing, .holding: .green
         case .tooClose, .lost, .error: .orange
         case .idle, .waiting: .secondary
         }

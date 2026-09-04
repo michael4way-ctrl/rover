@@ -163,7 +163,12 @@ final class RelayServer: ObservableObject {
         }
 
         publishEvent("\(incoming.method) \(incoming.target)")
-        session.dataTask(with: request) { [weak self] data, response, error in
+        let movementTaskID = UUID()
+        let isMovementRequest = incoming.target == "/wheels" || incoming.target.hasPrefix("/wheels?")
+        let task = session.dataTask(with: request) { [weak self] data, response, error in
+            if isMovementRequest {
+                RoverRequestGate.shared.finishRelayedMovementTask(id: movementTaskID)
+            }
             guard let self else {
                 connection.cancel()
                 return
@@ -182,7 +187,20 @@ final class RelayServer: ObservableObject {
             let body = data ?? Data()
             self.respond(status: status, contentType: type, body: body, on: connection)
             self.publishEvent("\(incoming.target): HTTP \(status), \(body.count) байт")
-        }.resume()
+        }
+
+        if isMovementRequest,
+           !RoverRequestGate.shared.registerRelayedMovementTask(task, id: movementTaskID) {
+            respond(
+                status: 409,
+                contentType: "application/json",
+                body: Data("{\"ok\":false,\"error\":\"sonar following controls the wheels\"}".utf8),
+                on: connection
+            )
+            publishEvent("Команда колёс отменена: началось следование")
+            return
+        }
+        task.resume()
     }
 
     private func destinationURL(for target: String) -> URL? {
