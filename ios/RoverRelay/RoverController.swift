@@ -84,7 +84,7 @@ private actor RoverAPI {
         components.queryItems = query.sorted(by: { $0.key < $1.key }).map(URLQueryItem.init)
         var request = URLRequest(url: components.url!)
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.timeoutInterval = path == "/snapshot" ? 3 : 1.2
+        request.timeoutInterval = path == "/snapshot" ? 3 : path == "/sonar" ? 0.45 : 1.2
         let (body, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw RoverError.invalidResponse
@@ -123,10 +123,15 @@ final class RoverController: ObservableObject {
     @Published var flashLevel = 0.0
     @Published var automaticSensors = false
     @Published private(set) var wheelProfile: WheelProfile
+    @Published private(set) var sonarFollowEnabled = false
+    @Published private(set) var sonarFollowState: SonarFollowState = .idle
+    @Published var sonarTargetDistance = 30.0
+    @Published var sonarFollowPower = 40.0
 
     private let api = RoverAPI()
     private var driveTask: Task<Void, Never>?
     private var sensorTask: Task<Void, Never>?
+    private var sonarFollowTask: Task<Void, Never>?
     private let profileKey = "rover-wheel-profile"
 
     init() {
@@ -154,7 +159,7 @@ final class RoverController: ObservableObject {
             )
             connected = true
             connectionText = "Ровер на связи"
-            lastMessage = "(status.hostname) отвечает по Wi-Fi"
+            lastMessage = "\(status.hostname) отвечает по Wi-Fi"
         } catch {
             connected = false
             connectionText = "Нет связи с ровером"
@@ -168,6 +173,7 @@ final class RoverController: ObservableObject {
             return
         }
         guard activeDirection != direction else { return }
+        cancelSonarFollowing()
         driveTask?.cancel()
         activeDirection = direction
         lastMessage = direction.title
@@ -199,6 +205,7 @@ final class RoverController: ObservableObject {
     func stopDriving() {
         driveTask?.cancel()
         driveTask = nil
+        cancelSonarFollowing()
         activeDirection = nil
         lastMessage = "Останавливаю"
         Task { [weak self] in
@@ -214,7 +221,7 @@ final class RoverController: ObservableObject {
     }
 
     func refreshSensors(_ path: String = "/sensors") async {
-        guard activeDirection == nil else { return }
+        guard activeDirection == nil, !sonarFollowEnabled else { return }
         do {
             let value = try await api.sensors(path: path)
             applySensors(value)
@@ -241,8 +248,136 @@ final class RoverController: ObservableObject {
         }
     }
 
+    func setSonarFollowing(_ enabled: Bool) {
+        if enabled {
+            startSonarFollowing()
+        } else {
+            stopSonarFollowing()
+        }
+    }
+
+    private func startSonarFollowing() {
+        guard connected else {
+            lastMessage = "Сначала нажмите «Проверить связь»"
+            return
+        }
+
+        driveTask?.cancel()
+        driveTask = nil
+        activeDirection = nil
+        sensorTask?.cancel()
+        sensorTask = nil
+        automaticSensors = false
+        sonarFollowTask?.cancel()
+        sonarFollowEnabled = true
+        sonarFollowState = .waiting
+        lastMessage = "Жду руку перед сонаром"
+
+        let policy = SonarFollowPolicy(
+            targetCM: sonarTargetDistance,
+            toleranceCM: 5,
+            trackingRangeCM: 8...100
+        )
+        let maximumPower = Int(sonarFollowPower)
+        let profile = wheelProfile
+
+        sonarFollowTask = Task { [weak self] in
+            guard let self else { return }
+            var wasMoving = false
+
+            do {
+                try await self.api.stop()
+                self.commandCount += 1
+            } catch {
+                self.finishSonarFollowingWithError(error)
+                return
+            }
+
+            while !Task.isCancelled {
+                do {
+                    let value = try await self.api.sensors(path: "/sonar")
+                    self.applySensors(value)
+                    let decision = policy.decision(
+                        distanceCM: self.sensors.sonarCM,
+                        valid: self.sensors.sonarValid,
+                        maxPower: maximumPower
+                    )
+
+                    switch decision {
+                    case .advance(let power):
+                        let motors = profile.motors(for: .forward, power: power)
+                        try await self.api.wheels(motors, timeout: 300)
+                        self.commandCount += 1
+                        self.sonarFollowState = .following
+                        self.lastMessage = "Еду к руке · \(power)%"
+                        wasMoving = true
+                    case .holding:
+                        if wasMoving { try await self.stopAfterSonarMovement() }
+                        self.sonarFollowState = .holding
+                        self.lastMessage = "Держу заданное расстояние"
+                        wasMoving = false
+                    case .tooClose:
+                        if wasMoving { try await self.stopAfterSonarMovement() }
+                        self.sonarFollowState = .tooClose
+                        self.lastMessage = "Рука близко — стою"
+                        wasMoving = false
+                    case .lost:
+                        if wasMoving { try await self.stopAfterSonarMovement() }
+                        self.sonarFollowState = self.sensors.sonarValid ? .lost : .waiting
+                        self.lastMessage = self.sensors.sonarValid ? "Рука слишком далеко — стою" : "Рука пропала — стою"
+                        wasMoving = false
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    try? await self.api.stop()
+                    self.finishSonarFollowingWithError(error)
+                    return
+                }
+
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+        }
+    }
+
+    private func stopSonarFollowing() {
+        guard sonarFollowEnabled else { return }
+        cancelSonarFollowing()
+        lastMessage = "Следование выключено"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.api.stop()
+                self.commandCount += 1
+                self.lastMessage = "Следование выключено · моторы остановлены"
+            } catch {
+                self.lastMessage = self.readable(error)
+            }
+        }
+    }
+
+    private func cancelSonarFollowing() {
+        sonarFollowTask?.cancel()
+        sonarFollowTask = nil
+        sonarFollowEnabled = false
+        sonarFollowState = .idle
+    }
+
+    private func stopAfterSonarMovement() async throws {
+        try await api.stop()
+        commandCount += 1
+    }
+
+    private func finishSonarFollowingWithError(_ error: Error) {
+        cancelSonarFollowing()
+        sonarFollowState = .error
+        connected = false
+        connectionText = "Следование остановлено"
+        lastMessage = readable(error)
+    }
+
     func takeSnapshot() async {
-        guard activeDirection == nil else {
+        guard activeDirection == nil, !sonarFollowEnabled else {
             lastMessage = "Сначала остановите ровер"
             return
         }
@@ -257,27 +392,27 @@ final class RoverController: ObservableObject {
     }
 
     func setServo() async {
-        guard activeDirection == nil else { return }
+        guard activeDirection == nil, !sonarFollowEnabled else { return }
         do {
             servoAngle = Double(try await api.servo(angle: Int(servoAngle)))
-            lastMessage = "Камера повёрнута на (Int(servoAngle))°"
+            lastMessage = "Камера повёрнута на \(Int(servoAngle))°"
         } catch {
             lastMessage = readable(error)
         }
     }
 
     func setFlash() async {
-        guard activeDirection == nil else { return }
+        guard activeDirection == nil, !sonarFollowEnabled else { return }
         do {
             try await api.flash(Int(flashLevel))
-            lastMessage = flashLevel == 0 ? "Подсветка выключена" : "Подсветка: (Int(flashLevel))"
+            lastMessage = flashLevel == 0 ? "Подсветка выключена" : "Подсветка: \(Int(flashLevel))"
         } catch {
             lastMessage = readable(error)
         }
     }
 
     func beep(frequency: Int = 880, duration: Int = 200) async {
-        guard activeDirection == nil else { return }
+        guard activeDirection == nil, !sonarFollowEnabled else { return }
         do {
             try await api.beep(frequency: frequency, duration: duration)
             lastMessage = "Сигнал отправлен"
@@ -287,7 +422,7 @@ final class RoverController: ObservableObject {
     }
 
     func playMelody() async {
-        guard activeDirection == nil else { return }
+        guard activeDirection == nil, !sonarFollowEnabled else { return }
         do {
             try await api.melody("440:150,0:50,660:300")
             lastMessage = "Мелодия отправлена"
@@ -297,7 +432,7 @@ final class RoverController: ObservableObject {
     }
 
     func testMotor(_ motor: String, power: Int) async {
-        guard activeDirection == nil else { return }
+        guard activeDirection == nil, !sonarFollowEnabled else { return }
         var values = ["m1": 0, "m2": 0, "m3": 0, "m4": 0]
         values[motor] = power
         do {
@@ -305,7 +440,7 @@ final class RoverController: ObservableObject {
                 MotorValues(m1: values["m1"]!, m2: values["m2"]!, m3: values["m3"]!, m4: values["m4"]!),
                 timeout: 350
             )
-            lastMessage = "(motor.uppercased()): (power)"
+            lastMessage = "\(motor.uppercased()): \(power)"
         } catch {
             lastMessage = readable(error)
         }

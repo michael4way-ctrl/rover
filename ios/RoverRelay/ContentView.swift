@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var rover = RoverController()
     @StateObject private var relay = RelayServer()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView {
@@ -10,6 +11,11 @@ struct ContentView: View {
                 DriveScreen(rover: rover)
             }
             .tabItem { Label("Ехать", systemImage: "steeringwheel") }
+
+            NavigationStack {
+                SonarFollowScreen(rover: rover)
+            }
+            .tabItem { Label("За рукой", systemImage: "hand.raised.fill") }
 
             NavigationStack {
                 SensorsScreen(rover: rover)
@@ -30,6 +36,142 @@ struct ContentView: View {
         .task {
             relay.start()
             await rover.connect()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active {
+                rover.stopDriving()
+            }
+        }
+    }
+}
+
+private struct SonarFollowScreen: View {
+    @ObservedObject var rover: RoverController
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                ConnectionCard(rover: rover)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Следовать за рукой")
+                                .font(.title2.bold())
+                            Text("Ровер едет прямо, пока удерживает выбранную дистанцию")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: stateSymbol)
+                            .font(.title2)
+                            .foregroundStyle(stateColor)
+                    }
+
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(distanceText)
+                            .font(.system(size: 42, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                        Spacer()
+                        Text(stateText)
+                            .font(.headline)
+                            .foregroundStyle(stateColor)
+                            .multilineTextAlignment(.trailing)
+                    }
+
+                    Divider()
+
+                    settingTitle("Дистанция", value: "\(Int(rover.sonarTargetDistance)) см")
+                    Slider(value: $rover.sonarTargetDistance, in: 20...60, step: 1)
+                        .disabled(rover.sonarFollowEnabled)
+                    Text("Ровер стоит в пределах ±5 см от выбранной дистанции.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    settingTitle("Предел мощности", value: "\(Int(rover.sonarFollowPower))%")
+                    Slider(value: $rover.sonarFollowPower, in: 35...60, step: 1)
+                        .disabled(rover.sonarFollowEnabled)
+
+                    Button {
+                        rover.setSonarFollowing(!rover.sonarFollowEnabled)
+                    } label: {
+                        Label(
+                            rover.sonarFollowEnabled ? "Выключить и остановить" : "Включить следование",
+                            systemImage: rover.sonarFollowEnabled ? "stop.fill" : "play.fill"
+                        )
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(rover.sonarFollowEnabled ? .red : .green)
+                    .disabled(!rover.connected && !rover.sonarFollowEnabled)
+                }
+                .cardStyle()
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("Как пользоваться", systemImage: "hand.point.up.left.fill")
+                        .font(.headline)
+                    Text("Поставьте ладонь перед сонаром и включите режим. Медленно отводите руку по прямой — ровер поедет следом. Уберите руку или поднесите её слишком близко — ровер остановится.")
+                        .font(.callout)
+                    Text("Сонар измеряет только расстояние: он не различает руку, коробку и другие предметы и не видит, с какой стороны находится объект.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+            }
+            .padding(16)
+        }
+        .navigationTitle("Следование")
+        .onDisappear {
+            if rover.sonarFollowEnabled {
+                rover.setSonarFollowing(false)
+            }
+        }
+    }
+
+    private var distanceText: String {
+        guard rover.sensors.sonarValid, let distance = rover.sensors.sonarCM else { return "— см" }
+        return String(format: "%.0f см", distance)
+    }
+
+    private var stateText: String {
+        switch rover.sonarFollowState {
+        case .idle: "Режим выключен"
+        case .waiting: "Жду руку"
+        case .following: "Еду к руке"
+        case .holding: "Держу дистанцию"
+        case .tooClose: "Слишком близко — стою"
+        case .lost: "Слишком далеко — стою"
+        case .error: "Ошибка — остановлен"
+        }
+    }
+
+    private var stateSymbol: String {
+        switch rover.sonarFollowState {
+        case .following: "car.side.fill"
+        case .holding: "checkmark.circle.fill"
+        case .tooClose, .lost, .error: "exclamationmark.octagon.fill"
+        case .idle, .waiting: "sensor.tag.radiowaves.forward.fill"
+        }
+    }
+
+    private var stateColor: Color {
+        switch rover.sonarFollowState {
+        case .following, .holding: .green
+        case .tooClose, .lost, .error: .orange
+        case .idle, .waiting: .secondary
+        }
+    }
+
+    private func settingTitle(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title).font(.headline)
+            Spacer()
+            Text(value).monospacedDigit().foregroundStyle(.secondary)
         }
     }
 }

@@ -166,3 +166,46 @@ struct RoverSensors: Equatable, Sendable {
     var lineMiddle: Int?
     var lineRight: Int?
 }
+
+enum SonarFollowDecision: Equatable, Sendable {
+    case lost
+    case tooClose
+    case holding
+    case advance(power: Int)
+}
+
+enum SonarFollowState: Equatable, Sendable {
+    case idle
+    case waiting
+    case following
+    case holding
+    case tooClose
+    case lost
+    case error
+}
+
+struct SonarFollowPolicy: Sendable {
+    let targetCM: Double
+    let toleranceCM: Double
+    let trackingRangeCM: ClosedRange<Double>
+
+    func decision(distanceCM: Double?, valid: Bool, maxPower: Int) -> SonarFollowDecision {
+        guard valid,
+              let distanceCM,
+              distanceCM.isFinite,
+              trackingRangeCM.contains(distanceCM) else {
+            return .lost
+        }
+
+        if distanceCM < targetCM - toleranceCM {
+            return .tooClose
+        }
+        if distanceCM <= targetCM + toleranceCM {
+            return .holding
+        }
+
+        let requestedPower = Int(((distanceCM - targetCM) * 1.2).rounded())
+        let limitedMaximum = min(60, max(35, maxPower))
+        return .advance(power: min(limitedMaximum, max(35, requestedPower)))
+    }
+}

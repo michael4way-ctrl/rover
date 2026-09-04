@@ -7,6 +7,13 @@ func expect(_ actual: MotorValues, _ expected: MotorValues, _ label: String) {
     }
 }
 
+func expectFollow(_ actual: SonarFollowDecision, _ expected: SonarFollowDecision, _ label: String) {
+    guard actual == expected else {
+        fputs("FAIL \(label): \(actual) != \(expected)\n", stderr)
+        exit(1)
+    }
+}
+
 let profile = WheelProfile.standard
 
 expect(
@@ -54,4 +61,37 @@ expect(
     "observed turn calibration"
 )
 
-print("PASS rover wheel vectors")
+let follower = SonarFollowPolicy(targetCM: 30, toleranceCM: 5, trackingRangeCM: 8...100)
+
+expectFollow(
+    follower.decision(distanceCM: nil, valid: false, maxPower: 45),
+    .lost,
+    "missing hand stops"
+)
+expectFollow(
+    follower.decision(distanceCM: 120, valid: true, maxPower: 45),
+    .lost,
+    "object outside tracking range stops"
+)
+expectFollow(
+    follower.decision(distanceCM: 22, valid: true, maxPower: 45),
+    .tooClose,
+    "close hand stops instead of reversing"
+)
+expectFollow(
+    follower.decision(distanceCM: 32, valid: true, maxPower: 45),
+    .holding,
+    "target corridor holds"
+)
+expectFollow(
+    follower.decision(distanceCM: 38, valid: true, maxPower: 45),
+    .advance(power: 35),
+    "small gap uses minimum moving power"
+)
+expectFollow(
+    follower.decision(distanceCM: 80, valid: true, maxPower: 45),
+    .advance(power: 45),
+    "large gap respects power limit"
+)
+
+print("PASS rover wheel vectors and sonar following policy")
