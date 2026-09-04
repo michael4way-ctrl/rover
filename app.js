@@ -272,16 +272,21 @@ function getDriveTiming() {
 function computePositionSpeeds(vector) {
   const speed = Number(el.speed.value);
   const [xRaw, yRaw, rRaw] = vector;
-  const magnitude = Math.max(1, Math.abs(xRaw) + Math.abs(yRaw) + Math.abs(rRaw));
+  // Q/E is an in-place turn; mixing strafe with yaw can cancel an entire axle.
+  if (rRaw !== 0) {
+    const turn = Math.sign(rRaw) * speed;
+    return { fl: turn, fr: -turn, bl: turn, br: -turn };
+  }
+
+  const magnitude = Math.max(1, Math.abs(xRaw) + Math.abs(yRaw));
   const x = xRaw / magnitude;
   const y = yRaw / magnitude;
-  const r = rRaw / magnitude;
 
   return {
-    fl: (y + x + r) * speed,
-    fr: (y - x - r) * speed,
-    bl: (y - x + r) * speed,
-    br: (y + x - r) * speed,
+    fl: (y + x) * speed,
+    fr: (y - x) * speed,
+    bl: (y - x) * speed,
+    br: (y + x) * speed,
   };
 }
 

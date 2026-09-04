@@ -58,7 +58,8 @@ function setup(t) {
     state.connected = true;
     el.speed.value = "55";
     el.timeout.value = "450";
-    globalThis.api = { state, startDrive, stopDrive, refreshSensors, requestRobot, bindKeyboard };
+    globalThis.api = { state, startDrive, stopDrive, refreshSensors, requestRobot, bindKeyboard,
+      computePositionSpeeds, positionSpeedsToMotors, vectorFromKeyboard };
   `, context);
   t.after(() => { for (const timer of timers) clearTimeout(timer); });
   return { ...context.api, requests, listeners };
@@ -152,4 +153,49 @@ test("keyboard auto-repeat cannot restart movement after STOP", async (t) => {
   c.listeners.keydown({ code: "KeyW", repeat: true, target: {}, preventDefault() {} });
   assert.equal(c.requests.length, 0);
   assert.equal(c.state.keyboard.size, 0);
+});
+
+test("Q/E commands all four wheels even with held translation keys", (t) => {
+  const c = setup(t);
+  for (const turn of [-1, 1]) {
+    for (const x of [-1, 0, 1]) {
+      for (const y of [-1, 0, 1]) {
+        const values = c.computePositionSpeeds([x, y, turn]);
+        assert.deepEqual({ ...values }, { fl: turn * 55, fr: -turn * 55, bl: turn * 55, br: -turn * 55 });
+      }
+    }
+  }
+});
+
+test("forward, sideways and diagonal commands retain their existing values", (t) => {
+  const c = setup(t);
+  for (const x of [-1, 0, 1]) {
+    for (const y of [-1, 0, 1]) {
+      const scale = 55 / Math.max(1, Math.abs(x) + Math.abs(y));
+      const values = c.computePositionSpeeds([x, y, 0]);
+      assert.deepEqual({ ...values }, {
+        fl: (y + x) * scale, fr: (y - x) * scale,
+        bl: (y - x) * scale, br: (y + x) * scale,
+      });
+    }
+  }
+});
+
+test("turns respect calibrated motor positions and polarity", (t) => {
+  const c = setup(t);
+  c.state.profile.mapping = { m1: "br", m2: "bl", m3: "fr", m4: "fl" };
+  c.state.profile.invert = { m1: true, m2: false, m3: false, m4: true };
+  const right = c.positionSpeedsToMotors(c.computePositionSpeeds([0, 0, 1]));
+  const left = c.positionSpeedsToMotors(c.computePositionSpeeds([0, 0, -1]));
+  assert.deepEqual({ ...right }, { m1: 55, m2: 55, m3: -55, m4: -55 });
+  for (const id of Object.keys(right)) assert.equal(left[id], -right[id]);
+});
+
+test("releasing Q restores held strafe without retaining a mixed turn", (t) => {
+  const c = setup(t);
+  c.state.keyboard.add("KeyD");
+  c.state.keyboard.add("KeyQ");
+  assert.deepEqual({ ...c.computePositionSpeeds(c.vectorFromKeyboard()) }, { fl: -55, fr: 55, bl: -55, br: 55 });
+  c.state.keyboard.delete("KeyQ");
+  assert.deepEqual({ ...c.computePositionSpeeds(c.vectorFromKeyboard()) }, { fl: 55, fr: -55, bl: -55, br: 55 });
 });
