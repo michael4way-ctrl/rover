@@ -107,22 +107,27 @@ expectFollow(
 )
 
 var tracker = SonarTargetTracker(
-    acquisitionRangeCM: 8...60,
-    trackingRangeCM: 8...100,
-    maximumAcquisitionDeltaCM: 6,
-    maximumJumpCM: 20
+    acquisitionRangeCM: 5...80,
+    trackingRangeCM: 5...120,
+    maximumAcquisitionDeltaCM: 12,
+    maximumJumpCM: 60,
+    allowedMissingSamples: 2
 )
 expectTarget(tracker.observe(distanceCM: 42, valid: true), .acquiring, "first echo does not move")
 expectTarget(tracker.observe(distanceCM: 40, valid: true), .tracked(distanceCM: 40), "second stable echo captures target")
-expectTarget(tracker.observe(distanceCM: 48, valid: true), .tracked(distanceCM: 48), "smooth hand movement stays captured")
-expectTarget(tracker.observe(distanceCM: 82, valid: true), .lost, "large distance jump loses hand")
-expectTarget(tracker.observe(distanceCM: 50, valid: true), .lost, "lost target cannot silently reacquire")
+expectTarget(tracker.observe(distanceCM: 70, valid: true), .tracked(distanceCM: 70), "fast hand movement stays captured")
+expectTarget(tracker.observe(distanceCM: nil, valid: false), .recovering, "one missed echo pauses without disabling")
+expectTarget(tracker.observe(distanceCM: 16, valid: true), .tracked(distanceCM: 16), "close hand is recovered")
+expectTarget(tracker.observe(distanceCM: nil, valid: false), .recovering, "first consecutive miss pauses")
+expectTarget(tracker.observe(distanceCM: nil, valid: false), .recovering, "second consecutive miss pauses")
+expectTarget(tracker.observe(distanceCM: nil, valid: false), .lost, "third consecutive miss loses target")
 
 var missingTracker = SonarTargetTracker(
-    acquisitionRangeCM: 8...60,
-    trackingRangeCM: 8...100,
-    maximumAcquisitionDeltaCM: 6,
-    maximumJumpCM: 20
+    acquisitionRangeCM: 5...80,
+    trackingRangeCM: 5...120,
+    maximumAcquisitionDeltaCM: 12,
+    maximumJumpCM: 60,
+    allowedMissingSamples: 2
 )
 expectTarget(missingTracker.observe(distanceCM: nil, valid: false), .acquiring, "missing echo waits without moving")
 

@@ -274,6 +274,7 @@ enum SonarFollowState: Equatable, Sendable {
 
 enum SonarTargetObservation: Equatable, Sendable {
     case acquiring
+    case recovering
     case tracked(distanceCM: Double)
     case lost
 }
@@ -283,10 +284,11 @@ struct SonarTargetTracker: Sendable {
     let trackingRangeCM: ClosedRange<Double>
     let maximumAcquisitionDeltaCM: Double
     let maximumJumpCM: Double
+    let allowedMissingSamples: Int
 
     private enum State: Sendable {
         case waiting(candidateCM: Double?)
-        case tracking(lastCM: Double)
+        case tracking(lastCM: Double, missingSamples: Int)
         case lost
     }
 
@@ -296,12 +298,14 @@ struct SonarTargetTracker: Sendable {
         acquisitionRangeCM: ClosedRange<Double>,
         trackingRangeCM: ClosedRange<Double>,
         maximumAcquisitionDeltaCM: Double,
-        maximumJumpCM: Double
+        maximumJumpCM: Double,
+        allowedMissingSamples: Int
     ) {
         self.acquisitionRangeCM = acquisitionRangeCM
         self.trackingRangeCM = trackingRangeCM
         self.maximumAcquisitionDeltaCM = maximumAcquisitionDeltaCM
         self.maximumJumpCM = maximumJumpCM
+        self.allowedMissingSamples = allowedMissingSamples
     }
 
     mutating func observe(distanceCM: Double?, valid: Bool) -> SonarTargetObservation {
@@ -318,21 +322,26 @@ struct SonarTargetTracker: Sendable {
             }
 
             if let candidateCM, abs(distanceCM - candidateCM) <= maximumAcquisitionDeltaCM {
-                state = .tracking(lastCM: distanceCM)
+                state = .tracking(lastCM: distanceCM, missingSamples: 0)
                 return .tracked(distanceCM: distanceCM)
             }
             state = .waiting(candidateCM: distanceCM)
             return .acquiring
-        case .tracking(let lastCM):
+        case .tracking(let lastCM, let missingSamples):
             guard valid,
                   let distanceCM,
                   distanceCM.isFinite,
                   trackingRangeCM.contains(distanceCM),
                   abs(distanceCM - lastCM) <= maximumJumpCM else {
+                let nextMissingCount = missingSamples + 1
+                if nextMissingCount <= allowedMissingSamples {
+                    state = .tracking(lastCM: lastCM, missingSamples: nextMissingCount)
+                    return .recovering
+                }
                 state = .lost
                 return .lost
             }
-            state = .tracking(lastCM: distanceCM)
+            state = .tracking(lastCM: distanceCM, missingSamples: 0)
             return .tracked(distanceCM: distanceCM)
         }
     }

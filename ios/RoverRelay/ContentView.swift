@@ -47,93 +47,25 @@ struct ContentView: View {
 
 private struct SonarFollowScreen: View {
     @ObservedObject var rover: RoverController
-    @State private var rearAreaClear = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                ConnectionCard(rover: rover)
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(spacing: 16) {
+                    ConnectionCard(rover: rover)
 
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Держать дистанцию по сонару")
-                                .font(.title2.bold())
-                            Text("Ровер подъезжает или отъезжает, чтобы держать выбранную дистанцию")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                    if geometry.size.width > geometry.size.height {
+                        HStack(alignment: .top, spacing: 16) {
+                            controlsCard
+                            instructionsCard
                         }
-                        Spacer()
-                        Image(systemName: stateSymbol)
-                            .font(.title2)
-                            .foregroundStyle(stateColor)
+                    } else {
+                        controlsCard
+                        instructionsCard
                     }
-
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(distanceText)
-                            .font(.system(size: 42, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                        Spacer()
-                        Text(stateText)
-                            .font(.headline)
-                            .foregroundStyle(stateColor)
-                            .multilineTextAlignment(.trailing)
-                    }
-
-                    Divider()
-
-                    settingTitle("Дистанция", value: "\(Int(rover.sonarTargetDistance)) см")
-                    Slider(value: $rover.sonarTargetDistance, in: 20...60, step: 1)
-                        .disabled(rover.sonarFollowEnabled)
-                    Text("Ровер стоит в пределах ±5 см от выбранной дистанции.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    settingTitle("Предел мощности", value: "\(Int(rover.sonarFollowPower))%")
-                    Slider(value: $rover.sonarFollowPower, in: 35...60, step: 1)
-                        .disabled(rover.sonarFollowEnabled)
-
-                    Toggle("Позади ровера свободно", isOn: $rearAreaClear)
-                        .disabled(rover.sonarFollowEnabled)
-
-                    if !rearAreaClear, !rover.sonarFollowEnabled {
-                        Text("Подтвердите свободное место сзади: при близкой ладони ровер поедет назад.")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-
-                    Button {
-                        rover.setSonarFollowing(!rover.sonarFollowEnabled)
-                    } label: {
-                        Label(
-                            rover.sonarFollowEnabled ? "Выключить и остановить" : "Включить следование",
-                            systemImage: rover.sonarFollowEnabled ? "stop.fill" : "play.fill"
-                        )
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(rover.sonarFollowEnabled ? .red : .green)
-                    .disabled((!rover.connected || !rearAreaClear) && !rover.sonarFollowEnabled)
-                }
-                .cardStyle()
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Label("Как пользоваться", systemImage: "hand.point.up.left.fill")
-                        .font(.headline)
-                    Text("Поставьте ладонь перед сонаром и включите режим. После двух согласованных замеров отводите руку — ровер подъедет; приближайте — он отъедет. Если цель потеряна, режим выключится; для нового захвата включите его снова.")
-                        .font(.callout)
-                    Text("Сонар измеряет только расстояние: он не различает руку, коробку и другие предметы, не видит направление и не проверяет пространство сзади.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 20))
             }
-            .padding(16)
         }
         .navigationTitle("Следование")
         .onDisappear {
@@ -141,11 +73,82 @@ private struct SonarFollowScreen: View {
                 rover.setSonarFollowing(false)
             }
         }
-        .onChange(of: rover.sonarFollowEnabled) { wasEnabled, isEnabled in
-            if wasEnabled, !isEnabled {
-                rearAreaClear = false
+    }
+
+    private var controlsCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Держать дистанцию по сонару")
+                        .font(.title2.bold())
+                    Text("Ровер подъезжает или отъезжает, чтобы держать выбранную дистанцию")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: stateSymbol)
+                    .font(.title2)
+                    .foregroundStyle(stateColor)
             }
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(distanceText)
+                    .font(.system(size: 42, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                Spacer()
+                Text(stateText)
+                    .font(.headline)
+                    .foregroundStyle(stateColor)
+                    .multilineTextAlignment(.trailing)
+            }
+
+            Divider()
+
+            settingTitle("Дистанция", value: "\(Int(rover.sonarTargetDistance)) см")
+            Slider(value: $rover.sonarTargetDistance, in: 20...60, step: 1)
+                .disabled(rover.sonarFollowEnabled)
+            Text("Ровер стоит в пределах ±5 см от выбранной дистанции.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            settingTitle("Предел мощности", value: "\(Int(rover.sonarFollowPower))%")
+            Slider(value: $rover.sonarFollowPower, in: 35...60, step: 1)
+                .disabled(rover.sonarFollowEnabled)
+
+            Button {
+                rover.setSonarFollowing(!rover.sonarFollowEnabled)
+            } label: {
+                Label(
+                    rover.sonarFollowEnabled ? "Выключить и остановить" : "Включить следование",
+                    systemImage: rover.sonarFollowEnabled ? "stop.fill" : "play.fill"
+                )
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(rover.sonarFollowEnabled ? .red : .green)
+            .disabled(!rover.connected && !rover.sonarFollowEnabled)
         }
+        .cardStyle()
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+
+    private var instructionsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Как пользоваться", systemImage: "hand.point.up.left.fill")
+                .font(.headline)
+            Text("Поставьте ладонь перед сонаром и включите режим. Отводите руку — ровер подъедет; приближайте — он отъедет. При краткой потере эха ровер остановится и продолжит искать цель.")
+                .font(.callout)
+            Text("Сонар измеряет только расстояние: он не различает руку, коробку и другие предметы, не видит направление и не проверяет пространство сзади.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
     private var distanceText: String {

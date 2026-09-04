@@ -156,23 +156,31 @@ final class RoverController: ObservableObject {
         busy = true
         connectionText = "Проверяю 192.168.2.23"
         defer { busy = false }
-        do {
-            let value = try await api.status()
-            status = RoverStatus(
-                hostname: value["hostname"] as? String ?? "car-02",
-                ip: value["ip"] as? String ?? "192.168.2.23",
-                camera: (value["camera"] as? String).flatMap { URL(string: $0)?.host } ?? "192.168.2.24",
-                rssi: RoverAPI.integer(value["rssi"]),
-                moving: value["moving"] as? Bool ?? false,
-                firmware: value["firmware"] as? String ?? ""
-            )
-            connected = true
-            connectionText = "Ровер на связи"
-            lastMessage = "\(status.hostname) отвечает по Wi-Fi"
-        } catch {
-            connected = false
-            connectionText = "Нет связи с ровером"
-            lastMessage = readable(error)
+        for attempt in 1...3 {
+            do {
+                let value = try await api.status()
+                status = RoverStatus(
+                    hostname: value["hostname"] as? String ?? "car-02",
+                    ip: value["ip"] as? String ?? "192.168.2.23",
+                    camera: (value["camera"] as? String).flatMap { URL(string: $0)?.host } ?? "192.168.2.24",
+                    rssi: RoverAPI.integer(value["rssi"]),
+                    moving: value["moving"] as? Bool ?? false,
+                    firmware: value["firmware"] as? String ?? ""
+                )
+                connected = true
+                connectionText = "Ровер на связи"
+                lastMessage = "\(status.hostname) отвечает по Wi-Fi"
+                return
+            } catch {
+                if attempt < 3 {
+                    connectionText = "Связь нестабильна · попытка \(attempt + 1) из 3"
+                    try? await Task.sleep(for: .milliseconds(250))
+                } else {
+                    connected = false
+                    connectionText = "Нет связи с ровером"
+                    lastMessage = readable(error)
+                }
+            }
         }
     }
 
@@ -282,7 +290,7 @@ final class RoverController: ObservableObject {
         let policy = SonarFollowPolicy(
             targetCM: sonarTargetDistance,
             toleranceCM: 5,
-            trackingRangeCM: 8...100
+            trackingRangeCM: 5...120
         )
         let maximumPower = Int(sonarFollowPower)
         let profile = wheelProfile
@@ -292,12 +300,16 @@ final class RoverController: ObservableObject {
             guard let self else { return }
             var wasMoving = false
             var consecutiveFailures = 0
-            var targetTracker = SonarTargetTracker(
-                acquisitionRangeCM: 8...60,
-                trackingRangeCM: 8...100,
-                maximumAcquisitionDeltaCM: 6,
-                maximumJumpCM: 20
-            )
+            func makeTargetTracker() -> SonarTargetTracker {
+                SonarTargetTracker(
+                    acquisitionRangeCM: 5...80,
+                    trackingRangeCM: 5...120,
+                    maximumAcquisitionDeltaCM: 12,
+                    maximumJumpCM: 60,
+                    allowedMissingSamples: 2
+                )
+            }
+            var targetTracker = makeTargetTracker()
 
             if let pendingStop { await pendingStop.value }
             guard self.isCurrentSonarRun(runID) else { return }
@@ -336,10 +348,21 @@ final class RoverController: ObservableObject {
                         self.lastMessage = "Держите руку перед сонаром"
                         try? await Task.sleep(for: .milliseconds(120))
                         continue
+                    case .recovering:
+                        if wasMoving { try await self.stopAfterSonarMovement() }
+                        wasMoving = false
+                        self.sonarFollowState = .waiting
+                        self.lastMessage = "Проверяю цель — стою"
+                        try? await Task.sleep(for: .milliseconds(120))
+                        continue
                     case .lost:
                         if wasMoving { try await self.stopAfterSonarMovement() }
-                        self.finishSonarFollowingAfterTargetLoss(runID)
-                        return
+                        wasMoving = false
+                        targetTracker = makeTargetTracker()
+                        self.sonarFollowState = .waiting
+                        self.lastMessage = "Цель потеряна — стою и ищу снова"
+                        try? await Task.sleep(for: .milliseconds(180))
+                        continue
                     case .tracked:
                         break
                     }
@@ -388,8 +411,10 @@ final class RoverController: ObservableObject {
                         wasMoving = false
                     case .lost:
                         if wasMoving { try await self.stopAfterSonarMovement() }
-                        self.finishSonarFollowingAfterTargetLoss(runID)
-                        return
+                        wasMoving = false
+                        targetTracker = makeTargetTracker()
+                        self.sonarFollowState = .waiting
+                        self.lastMessage = "Цель потеряна — стою и ищу снова"
                     }
                     consecutiveFailures = 0
                 } catch is CancellationError {
@@ -401,6 +426,12 @@ final class RoverController: ObservableObject {
                     }
                     try? await self.api.stop()
                     wasMoving = false
+                    if error is URLError {
+                        self.sonarFollowState = .waiting
+                        self.lastMessage = "Связь с ровером прервалась — стою и пробую снова"
+                        try? await Task.sleep(for: .milliseconds(250))
+                        continue
+                    }
                     consecutiveFailures += 1
                     if consecutiveFailures < 3 {
                         self.sonarFollowState = .waiting
@@ -483,16 +514,6 @@ final class RoverController: ObservableObject {
         sonarFollowEnabled = false
         sonarFollowState = .idle
         lastMessage = "Следование остановлено командой с Mac"
-    }
-
-    private func finishSonarFollowingAfterTargetLoss(_ runID: UUID) {
-        guard isCurrentSonarRun(runID) else { return }
-        RoverRequestGate.shared.endSonarControl(runID)
-        sonarRunID = nil
-        sonarFollowTask = nil
-        sonarFollowEnabled = false
-        sonarFollowState = .lost
-        lastMessage = "Цель потеряна — включите режим снова"
     }
 
     private func isCurrentSonarRun(_ runID: UUID) -> Bool {
